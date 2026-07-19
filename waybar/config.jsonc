@@ -1,0 +1,170 @@
+// ~/.config/mango/waybar/config.jsonc
+// Dùng cho MangoWM. Cần: waybar, rofi, pamixer, brightnessctl, swayosd, wlsunset, blueman, playerctl, wlogout.
+{
+    "layer": "top",
+    "position": "top",
+    "height": 34,
+    "spacing": 4,
+    "margin-top": 6,
+    "margin-left": 10,
+    "margin-right": 10,
+
+    // ===== TRÁI: workspaces + app đang mở =====
+    "modules-left": [
+        "custom/ws1", "custom/ws2", "custom/ws3",
+        "custom/ws4", "custom/ws5", "wlr/taskbar"
+    ],
+    // ===== GIỮA: media đang phát, thời tiết, ngày giờ =====
+    "modules-center": ["mpris", "custom/weather", "clock"],
+
+    // ===== PHẢI: tray, loa/mic, brightness, wifi, bluetooth, power =====
+    "modules-right": [
+        "tray",
+        "pulseaudio",
+        "pulseaudio#microphone",
+        "backlight",
+        "network",
+        "bluetooth",
+        "custom/power"
+    ],
+
+    // ---------- TRÁI ----------
+    "custom/ws1": {
+        "format": "1",
+        "on-click": "ydotool key 29:1 2:1 2:0 29:0",
+        "tooltip": false
+    },
+    "custom/ws2": {
+        "format": "2",
+        "on-click": "ydotool key 29:1 3:1 3:0 29:0",
+        "tooltip": false
+    },
+    "custom/ws3": {
+        "format": "3",
+        "on-click": "ydotool key 29:1 4:1 4:0 29:0",
+        "tooltip": false
+    },
+    "custom/ws4": {
+        "format": "4",
+        "on-click": "ydotool key 29:1 5:1 5:0 29:0",
+        "tooltip": false
+    },
+    "custom/ws5": {
+        "format": "5",
+        "on-click": "ydotool key 29:1 6:1 6:0 29:0",
+        "tooltip": false
+    },
+    "wlr/taskbar": {
+        "format": "{icon}",
+        "icon-size": 14,
+        "tooltip-format": "{title}",
+        "on-click": "activate",
+        "ignore-list": [],
+        "rewrite": {
+            "^$": "Desktop"
+        }
+    },
+
+    // ---------- GIỮA ----------
+    "mpris": {
+        "format": "{player_icon} {dynamic}",
+        "format-paused": "{status_icon} {dynamic}",
+        "player-icons": {
+            "default": "",
+            "spotify": "",
+            "mpv": "",
+            "vlc": "󰕼"
+        },
+        "status-icons": {
+            "paused": "󰏤",
+            "playing": "󰐊"
+        },
+        "max-length": 45,
+        "dynamic-len": 40,
+        "on-click": "playerctl play-pause",
+        "on-scroll-up": "playerctl next",
+        "on-scroll-down": "playerctl previous"
+    },
+    "custom/weather": {
+        "exec": "~/.config/mango/waybar/scripts/weather.sh",
+        "return-type": "json",
+        "interval": 1800,
+        "tooltip": true
+    },
+    "clock": {
+        "format": "{:%H:%M - %d/%m/%Y}",
+        "format-alt": "{:%A, %d %B %Y}",
+        "tooltip-format": "<big>{:%B %Y}</big>\n<tt><small>{calendar}</small></tt>",
+        "calendar": {
+            "mode": "month",
+            "weeks-pos": "left",
+            "format": {
+                "today": "<span color='#f9e2af'><b>{}</b></span>"
+            }
+        }
+    },
+
+    // ---------- PHẢI ----------
+    "tray": {
+        "icon-size": 18,
+        "spacing": 10
+    },
+    "pulseaudio": {
+        "format": "{icon}  {volume}%",
+        "format-muted": "󰝟  Muted",
+        "format-icons": {
+            "default": ["󰕿", "󰖀", "󰕾"]
+        },
+        "scroll-step": 3,
+        "on-click": "pamixer -t",
+        "on-click-right": "~/.config/mango/waybar/scripts/audio-switch.sh output",
+        "on-scroll-up": "swayosd-client --output-volume raise",
+        "on-scroll-down": "swayosd-client --output-volume lower",
+        "tooltip-format": "{desc}\n{volume}%"
+    },
+    "pulseaudio#microphone": {
+        "format": "{format_source}",
+        "format-source": "󰍬 {volume}%",
+        "format-source-muted": "󰍭 Muted",
+        "on-click": "pamixer --default-source -t",
+        "on-click-right": "~/.config/mango/waybar/scripts/audio-switch.sh input",
+        "on-scroll-up": "swayosd-client --input-volume raise",
+        "on-scroll-down": "swayosd-client --input-volume lower",
+        "tooltip-format": "{desc}\n{volume}%"
+    },
+    "backlight": {
+        "format": "{icon} {percent}%",
+        "format-icons": ["󰃞", "󰃟", "󰃠"],
+        "on-scroll-up": "swayosd-client --brightness raise",
+        "on-scroll-down": "swayosd-client --brightness lower",
+        "on-click-right": "~/.config/mango/waybar/scripts/nightmode-toggle.sh",
+        "tooltip-format": "Độ sáng: {percent}%\nClick phải: bật/tắt night mode"
+    },
+    "network": {
+        "format-wifi": "{icon} {essid}",
+        "format-ethernet": "󰈀 Có dây",
+        "format-disconnected": "󰤭 Mất mạng",
+        "format-disabled": "󰤯 Wi-Fi tắt",
+        "format-icons": ["󰤟", "󰤢", "󰤥", "󰤨"],
+        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n󰇚 {bandwidthDownBits}  󰕒 {bandwidthUpBits}",
+        "on-click": "~/.config/mango/waybar/scripts/wifi-menu.sh",
+        "on-click-right": "nm-connection-editor",
+        "interval": 5
+    },
+    "bluetooth": {
+        "format": "󰂯",
+        "format-connected": "󰂱 {device_alias}",
+        "format-connected-battery": "󰂱 {device_alias} {device_battery_percentage}%",
+        "format-off": "󰂲",
+        "format-disabled": "󰂲",
+        "tooltip-format": "{controller_alias}\t{controller_address}",
+        "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
+        "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
+        "on-click": "blueman-manager"
+    },
+    "custom/power": {
+        "format": "Power",
+        "on-click": "wlogout",
+        "tooltip": false
+    }
+}

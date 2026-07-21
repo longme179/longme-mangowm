@@ -1,0 +1,158 @@
+# Don't print a new line at the start of the prompt
+# Pipes ╰─ ╭─
+# Powerline symbols                 
+#                   
+# Wedges 🭧🭒 🭣🭧🭓
+# Random noise 🬖🬥🬔🬗
+# Cool stuff 󰜥   
+
+# format = """
+# $directory $fill $git_branch $cmd_duration
+#  $character"""
+format = """
+╭─ $cmd_duration $directory$git_branch$git_status$battery$time
+╰─$character"""
+
+right_format = """$status"""
+scan_timeout = 30
+command_timeout = 1000
+add_newline = true
+
+[character]
+success_symbol = "[❯](bold fg:#f9a825)"
+error_symbol = "[❯](bold fg:#f38ba8)"
+vimcmd_symbol = "[❮](bold fg:#00acc1)"
+
+# ═══════════════════════════════════════════
+# DIRECTORY PILL
+# ═══════════════════════════════════════════
+
+[directory]
+home_symbol = " "
+read_only = "  "
+style = "bg:255 fg:240"
+truncation_length = 2
+truncation_symbol = ".../"
+format = '[](bold fg:255)[󰉋 → $path]($style)[](bold fg:255)'
+
+[directory.substitutions]
+"Desktop" = "  "
+"Documents" = "  "
+"Downloads" = "  "
+"Music" = " 󰎈 "
+"Pictures" = "  "
+"Videos" = "  "
+"GitHub" = " 󰊤 "
+
+# ═══════════════════════════════════════════
+# GIT BRANCH PILL
+# ═══════════════════════════════════════════
+[git_branch]
+style = "bg: 252"
+symbol = "󰘬"
+truncation_length = 12
+truncation_symbol = ""
+format = " 󰜥 [](bold fg:252)[$symbol $branch(:$remote_branch)](fg:235 bg:252)[ ](bold fg:252)"
+
+[git_commit]
+commit_hash_length = 4
+tag_symbol = " "
+
+[git_state]
+format = '[\($state( $progress_current of $progress_total)\)]($style) '
+cherry_pick = "[🍒 PICKING](bold red)"
+
+[git_status]
+conflicted = " 🏳 "
+ahead = " 🏎💨 "
+behind = " 😰 "
+diverged = " 😵 "
+untracked = " 🤷 ‍"
+stashed = " 📦 "
+modified = " 📝 "
+staged = '[++\($count\)](green)'
+renamed = " ✍️ "
+deleted = " 🗑 "
+
+# ═══════════════════════════════════════════
+# CPU PILL - Fixed command
+# ═══════════════════════════════════════════
+[custom.cpu]
+command = "awk '{load=$1; cores=6; pct=int((load/cores)*100); if(pct>100) pct=100; print pct}' /proc/loadavg"
+when = "true"
+format = " [](fg:#00acc1)[  $output% ](fg:#1e1e2e bg:#00acc1)[](fg:#00acc1)"
+shell = ["sh"]
+
+# ═══════════════════════════════════════════
+# TEMP PILL - Fixed command
+# ═══════════════════════════════════════════
+[custom.temp]
+command = "sensors 2>/dev/null | awk '/Tctl:/{gsub(/[+°C]/,\"\",$2); printf \"%.0f\", $2}'"
+when = "which sensors"
+format = " [](fg:#f9a825)[  $output°C ](fg:#1e1e2e bg:#f9a825)[](fg:#f9a825)"
+shell = ["sh"]
+
+# ═══════════════════════════════════════════
+# BATTERY PILL
+# ═══════════════════════════════════════════
+[battery]
+format = " [](fg:$style)[ $symbol $percentage ](fg:#1e1e2e bg:$style)[](fg:$style)"
+full_symbol = "󰁹 "
+charging_symbol = "󰂄 "
+discharging_symbol = "󰂃 "
+unknown_symbol = " "
+empty_symbol = "󰂎 "
+
+[[battery.display]]
+threshold = 20
+style = "bold #f38ba8"
+
+[[battery.display]]
+threshold = 50
+style = "#f9a825"
+
+[[battery.display]]
+threshold = 100
+style = "#a6e3a1"
+
+# ═══════════════════════════════════════════
+# TIME PILL
+# ═══════════════════════════════════════════
+[time]
+disabled = false
+style = "fg:#000000 bg:#c4a7e7"
+format = " [](fg:#c4a7e7)[ $time ]($style)[](fg:#c4a7e7)"
+time_format = "%H:%M"
+
+# ═══════════════════════════════════════════
+# CMD DURATION & STATUS
+# ═══════════════════════════════════════════
+[cmd_duration]
+min_time = 0
+format = '[](bold fg:252)[󰪢 $duration](bold bg:252 fg:235)[](bold fg:252)'
+
+[status]
+disabled = false
+style = "fg:#f38ba8"
+symbol = "✖"
+format = " [$symbol $status]($style)"
+
+[sudo]
+disabled = false
+style = "bold fg:#f38ba8"
+symbol = " "
+format = "[$symbol]($style)"
+
+# ═══════════════════════════════════════════
+# DISABLED MODULES
+# ═══════════════════════════════════════════
+[username]
+disabled = true
+[hostname]
+disabled = true
+[python]
+disabled = true
+[nodejs]
+disabled = true
+[package]
+disabled = true

@@ -1,0 +1,245 @@
+/* ~/.config/waybar/style.css */
+/* Rose Pine */
+
+* {
+    /* Đổi tên font dưới đây */
+    font-family: "FantasqueSansM Nerd Font", "IosevkaTerm Nerd Font", sans-serif;
+    font-size: 16px; /* Font này tròn nên nên để size 14 cho dễ nhìn hơn */
+    font-weight: 600;
+    min-height: 0;
+}
+
+@define-color base   #191724;
+@define-color mantle #1f1d2e;
+@define-color text   #e0def4;
+@define-color subtext #908caa;
+@define-color surface0 #26233a;
+@define-color surface1 #6e6a86;
+@define-color blue    #9ccfd8;
+@define-color lavender #ebbcba;
+@define-color mauve   #c4a7e7;
+@define-color pink    #eb6f92;
+@define-color red     #eb6f92;
+@define-color peach   #f6c177;
+@define-color yellow  #f6c177;
+@define-color green   #31748f;
+@define-color teal    #9ccfd8;
+@define-color sky     #9ccfd8;
+
+window#waybar {
+    background: transparent;
+}
+
+window#waybar > box {
+    background-color: alpha(@mantle, 0.8);
+    border-radius: 14px;
+    border: 2px solid alpha(@surface1, 0.4);
+    margin: 0;
+    padding: 0 8px;
+}
+
+tooltip {
+    background: @mantle;
+    border: 1px solid @surface1;
+    border-radius: 10px;
+}
+tooltip label {
+    color: @text;
+    padding: 4px;
+}
+
+/* module chung: khoảng cách + pill nền */
+#taskbar,
+#mpris,
+#custom-weather,
+#clock,
+#tray,
+#pulseaudio,
+#pulseaudio.microphone,
+#backlight,
+#network,
+#bluetooth,
+#custom-power {
+    background-color: alpha(@surface0, 0.5);
+    color: @text;
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 10px;
+}
+
+/* ---------- TRÁI: workspaces + taskbar ---------- */
+#workspaces {
+    padding: 0 4px;
+}
+#workspaces button {
+    all: unset;
+    color: @subtext;
+    padding: 0 7px;
+    margin: 0 2px;
+    border-radius: 8px;
+    min-width: 10px;
+}
+#workspaces button.occupied {
+    color: @text;
+    background-color: alpha(@lavender, 0.15);
+}
+#workspaces button.focused {
+    color: @base;
+    background-color: @lavender;
+}
+#workspaces button.urgent {
+    color: @base;
+    background-color: @red;
+}
+#workspaces button:hover {
+    background-color: alpha(@lavender, 0.35);
+}
+
+#taskbar button {
+    all: unset;
+    padding: 0 5px;
+}
+
+/* ---------- GIỮA ---------- */
+#mpris {
+    color: @green;
+    background-color: alpha(@surface0, 0.5);
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 10px;
+}
+#mpris.paused {
+    color: @subtext;
+}
+
+#custom-weather {
+    color: @peach;
+    background-color: alpha(@surface0, 0.5);
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 10px;
+}
+
+#clock {
+    color: @sky;
+    font-weight: 700;
+}
+
+/* ---------- PHẢI ---------- */
+#tray {
+    padding: 0 8px;
+}
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: alpha(@red, 0.4);
+    border-radius: 8px;
+}
+
+#pulseaudio {
+    color: @mauve;
+}
+#pulseaudio.muted {
+    color: @subtext;
+}
+#pulseaudio.microphone {
+    color: @pink;
+}
+#pulseaudio.microphone.source-muted {
+    color: @subtext;
+}
+
+#backlight {
+    color: @yellow;
+}
+
+#network {
+    color: @blue;
+}
+#network.disconnected,
+#network.disabled {
+    color: @red;
+}
+
+#bluetooth {
+    color: @sky;
+}
+#bluetooth.off,
+#bluetooth.disabled {
+    color: @subtext;
+}
+#bluetooth.connected {
+    color: @green;
+}
+
+#custom-power {
+    color: @base;
+    background-color: alpha(@red, 0.85);
+    font-weight: 800;
+}
+
+/* hover chung cho các module có thể bấm */
+#pulseaudio:hover,
+#pulseaudio.microphone:hover,
+#backlight:hover,
+#network:hover,
+#bluetooth:hover,
+#mpris:hover,
+#custom-power:hover {
+    background-color: @surface1;
+}
+
+
+
+/* ---------- Custom Grid & Launcher ---------- */
+#custom-grid, #custom-launcher {
+    background-color: alpha(@surface0, 0.5);
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 10px;
+}
+
+/* Bo góc trái cho nút Grid */
+#custom-grid {
+    border-radius: 10px 0 0 10px;
+    margin-left: 5px;
+    color: @rose; /* Màu hồng nhạt cho nút Grid */
+}
+/* Bo góc phải cho nút Apps */
+#custom-launcher {
+    border-radius: 0 10px 10px 0;
+    margin-right: 3px;
+    color: @iris; /* Màu tím nhạt cho nút App */
+}
+
+/* Hiệu ứng hover */
+#custom-grid:hover {
+    background-color: @rose;
+    color: @base;
+}
+#custom-launcher:hover {
+    background-color: @iris;
+    color: @base;
+}
+
+#battery {
+    color: @green;
+    background-color: alpha(@surface0, 0.5);
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 10px;
+}
+#battery.charging {
+    color: @yellow;
+}
+#battery.warning {
+    color: @peach;
+}
+#battery.critical {
+    color: @red;
+}
+#battery.plugged {
+    color: @blue;
+}

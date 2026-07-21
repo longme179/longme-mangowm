@@ -1,0 +1,119 @@
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  "logo": {
+    /* Logo configuration */
+    "type": "auto", // Logo type: auto, builtin, small, file, etc.
+    "source": "/home/longme/.config/fastfetch/ascii/hhog.txt", // Built-in logo name or file path
+    "width": 40, // Width in characters
+    "height": 35, // Height in characters
+    "padding": {
+      "top": 5, // Top padding
+      "left": 0, // Left padding
+      "right": 2, // Right padding
+    },
+    "color": {
+      // Override logo colors
+      "1": "blue",
+      "2": "green",
+    },
+  },
+  // ═══════════════════════════════════════════
+  //  STYLE - minimal nhưng tinh tế
+  // ═══════════════════════════════════════════
+  "separator": " →",
+  "key": {
+    "type": "string",
+    "color": "bright_blue",
+  },
+  "color": {
+    "separator": "dim_white",
+  },
+  "brightColor": true,
+  "percent": {
+    "type": 2,
+    "green": "bright_green",
+    "yellow": "bright_yellow",
+    "red": "bright_red",
+  },
+
+  // ═══════════════════════════════════════════
+  //  MODULES - chỉ giữ những thứ cần thiết
+  // ═══════════════════════════════════════════
+  "modules": [
+    // Header nghệ với custom title
+    {
+      "type": "custom",
+      "format": "\u001b[1;38;2;130;170;255m╭───── \u001b[38;2;255;180;200m{1}\u001b[38;2;130;170;255m@{2} \u001b[0m\u001b[38;2;130;170;255m─────",
+      "arguments": ["$USER", "linux-tinfoil-cachy"],
+    },
+    {
+      "type": "custom",
+      "format": "\u001b[38;2;130;170;255m│\u001b[0m",
+    },
+
+    // Thông tin hệ thống
+    { "type": "os", "key": "OS" },
+    { "type": "kernel", "key": "Kernel", "format": "{1} {2}" },
+    { "type": "packages", "key": "Packages" },
+    { "type": "shell", "key": "Shell" },
+
+    {
+      "type": "custom",
+      "format": "\u001b[38;2;130;170;255m│\u001b[0m",
+    },
+    {
+      "type": "custom",
+      "format": "\u001b[1;38;2;255;200;150m├─ \u001b[0m\u001b[38;2;255;200;150mDesktop\u001b[0m",
+    },
+    { "type": "de", "key": "WM/DE" },
+    { "type": "display", "key": "Display", "compactType": "compact" },
+    { "type": "terminal", "key": "Terminal" },
+    { "type": "terminalfont", "key": "Font" },
+
+    {
+      "type": "custom",
+      "format": "\u001b[38;2;130;170;255m│\u001b[0m",
+    },
+    {
+      "type": "custom",
+      "format": "\u001b[1;38;2;180;255;180m├─ \u001b[0m\u001b[38;2;180;255;180mHardware\u001b[0m",
+    },
+    { "type": "cpu", "key": "CPU", "showPeCoreCount": false, "temp": true },
+    { "type": "gpu", "key": "GPU", "driverSpecificMode": false },
+    {
+      "type": "memory",
+      "key": "RAM",
+      "percent": { "type": 2 },
+    },
+    {
+      "type": "disk",
+      "key": "Disk",
+      "folders": ["/"],
+      "percent": { "type": 2 },
+    },
+    {
+      "type": "battery",
+      "key": "Battery",
+      "percent": { "type": 2 },
+    },
+
+    {
+      "type": "custom",
+      "format": "\u001b[38;2;130;170;255m│\u001b[0m",
+    },
+    {
+      "type": "custom",
+      "format": "\u001b[1;38;2;200;180;255m└─ \u001b[0m\u001b[38;2;200;180;255mSession\u001b[0m",
+    },
+    { "type": "uptime", "key": "Uptime" },
+    {
+      "type": "command",
+      "key": "Weather",
+      "text": "curl -s 'wttr.in/?format=%c+%t+%w' 2>/dev/null || echo 'offline'",
+    },
+
+    // Palette màu ở cuối - classic unixporn touch
+    "break",
+    { "type": "colors", "symbol": "circle" },
+  ],
+}

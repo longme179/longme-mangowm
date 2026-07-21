@@ -12,7 +12,6 @@ A minimal, aesthetic, and usability-focused Wayland desktop configuration tailor
 - 🎨 **Rose Pine Duotone Theme**: Uniformly applied across Window Manager borders, Waybar, Kitty, Fuzzel, and SwayNC.
 - 🪟 **MangoWM Optimized**: Smart keybinds that avoid conflicts with games (uses `Super` for workspaces instead of `Alt`/`Ctrl`).
 - 📊 **Custom Workspace Grid (`grid.py`)**: A custom GTK Layer Shell popup written in Python. Features a 10-workspace grid layout and supports **Drag & Drop** windows across workspaces smoothly using the `mmsg` API.
-- 🚀 **1-Click Auto Backup**: Integrated Waybar button and Fish shell alias (`backup`) to automatically commit and push configs to GitHub with a single click.
 - 🔄 **Auto-reload Waybar**: An `inotifywait` script that monitors CSS/Config files and automatically reloads Waybar the moment you hit save.
 - 🐚 **Fish & Kitty Terminal**: Rounded font setup (FantasqueSansM), DPI fixes, and optimized aliases.
 - 📂 **Dolphin Service Menus**: Custom right-click context menus (Open in Zed, Open Kitty Here, Gowall Convert, Set as Wallpaper).
@@ -43,11 +42,11 @@ inotify-tools ydotool brightnessctl pamixer
 | Keybind | Action |
 | :--- | :--- |
 | `Super + Tab` | Open Workspace Grid (Drag & Drop apps) |
-| `Super + [1-9]` | Switch to Workspace |
-| `Super + Alt + [1-9]` | Move active window to Workspace |
+| `Super + [1-10]` | Switch to Workspace |
+| `Super + Alt + [1-10]` | Move active window to Workspace |
 | `Alt + Space` | Open App Launcher (Fuzzel) |
 | `Alt + Return` | Open Terminal (Kitty) |
-| `Alt + Q` | Kill active window |
+| `Super + Q` | Kill active window |
 | `Super + M` | Quit MangoWM |
 
 ## 🚀 Installation

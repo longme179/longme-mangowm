@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 #
-# Screen Recorder GUI for MangoWM
-# Requirements: wf-recorder, notify-send, python-gobject, gtk3
-# Description: A popup GUI to record the native Wayland screen.
-#              Hides itself while recording. Stops and saves when
-#              clicking Stop or closing the popup.
+# Screen Recorder GUI for MangoWM (gpu-screen-recorder)
+# Requirements: gpu-screen-recorder, notify-send, python-gobject, gtk3
+# Description: Records the native Wayland screen at 30fps using GPU encoding.
+#              Automatically captures desktop audio.
 #
 
 import gi
@@ -52,6 +51,17 @@ window { background-color: rgba(25, 23, 36, 0.85); }
 .hint { color: #908caa; font-size: 12px; margin-top: 15px; }
 """
 
+def get_default_audio_sink():
+    """Tự động lấy tên loa mặc định để quay tiếng desktop"""
+    try:
+        res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            # Thêm đuôi .monitor để PipeWire/PulseAudio biết là ghi âm loa
+            return f"{res.stdout.strip()}.monitor"
+    except Exception:
+        pass
+    return None
+
 class RecorderGUI(Gtk.Window):
     def __init__(self):
         super().__init__(title="Recorder")
@@ -81,12 +91,18 @@ class RecorderGUI(Gtk.Window):
         main_box.set_valign(Gtk.Align.CENTER)
         self.add(main_box)
 
-        self.btn = Gtk.Button(label="󰕧 Start Recording")
-        self.btn.get_style_context().add_class("btn")
-        self.btn.connect("clicked", self.on_toggle_record)
-        main_box.pack_start(self.btn, False, False, 0)
+        self.btn_start = Gtk.Button(label="󰕧 Start Recording")
+        self.btn_start.get_style_context().add_class("btn")
+        self.btn_start.connect("clicked", self.on_start_clicked)
+        main_box.pack_start(self.btn_start, False, False, 0)
 
-        self.hint = Gtk.Label(label="Press ESC or close window to stop & save")
+        self.btn_stop = Gtk.Button(label="󰛊 Stop & Save")
+        self.btn_stop.get_style_context().add_class("btn btn-stop")
+        self.btn_stop.connect("clicked", self.on_stop_clicked)
+        self.btn_stop.set_no_show_all(True)
+        main_box.pack_start(self.btn_stop, False, False, 0)
+
+        self.hint = Gtk.Label(label="Click Start to begin recording (30fps)")
         self.hint.get_style_context().add_class("hint")
         main_box.pack_start(self.hint, False, False, 0)
 
@@ -94,45 +110,63 @@ class RecorderGUI(Gtk.Window):
         self.proc = None
         self.filename = ""
 
-    def on_toggle_record(self, widget):
-        if not self.is_recording:
-            self.start_recording()
-        else:
-            self.on_stop_clicked()
+    def on_start_clicked(self, widget):
+        if self.is_recording:
+            return
 
-    def start_recording(self):
-        # Tạo thư mục Videos nếu chưa có
         videos_dir = os.path.expanduser("~/Videos")
         os.makedirs(videos_dir, exist_ok=True)
 
         self.filename = f"{videos_dir}/recording_{int(time.time())}.mp4"
 
-        # Lệnh quay màn hình (wf-recorder tự tối ưu GPU để file nhỏ và nét)
-        cmd = ["wf-recorder", "-f", self.filename]
+        # Lấy thiết bị âm thanh desktop
+        audio_sink = get_default_audio_sink()
+
+        # Lệnh quay màn hình bằng gpu-screen-recorder
+        cmd = [
+            "gpu-screen-recorder",
+            "-w", "screen",           # Quay toàn bộ màn hình hiện tại
+            "-f", "30",               # 30 FPS
+            "-k", "h264",             # Codec H264 (nhẹ, tương thích cao)
+            "-v", "15000",            # Bitrate 15000 Kbps (15 Mbps) - cực nét, ít vỡ khối
+            "-o", self.filename       # File xuất
+        ]
+
+        if audio_sink:
+            cmd.extend(["-a", audio_sink]) # Thêm âm thanh desktop
+
         self.proc = subprocess.Popen(cmd)
 
         self.is_recording = True
-        self.btn.set_label("󰛊 Stop & Save")
-        self.btn.get_style_context().add_class("btn-stop")
-        self.hint.set_label("Recording... Press ESC or close to stop")
+        self.btn_start.hide()
+        self.btn_stop.show()
+        self.hint.set_label("Recording... Click Stop or ESC to save")
 
-        # Ẩn popup đi để không bị quay vào video
-        self.hide()
+        subprocess.Popen(["notify-send", "Screen Recorder", "Started recording (30fps)..."])
+
+    def on_stop_clicked(self, *args):
+        if not self.is_recording:
+            Gtk.main_quit()
+            return
+
+        self.is_recording = False
+        self.btn_stop.set_label("Saving...")
+        self.btn_stop.set_sensitive(False)
+        self.hint.set_label("Saving file, please wait...")
+
         while Gtk.events_pending():
             Gtk.main_iteration()
 
-        subprocess.Popen(["notify-send", "Screen Recorder", "Started recording..."])
+        if self.proc and self.proc.poll() is None:
+            try:
+                # Gửi SIGINT để gpu-screen-recorder đóng file mp4 an toàn
+                self.proc.send_signal(signal.SIGINT)
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
 
-    def on_stop_clicked(self, *args):
-        if self.is_recording and self.proc:
-            self.is_recording = False
-
-            # Gửi SIGINT để wf-recorder lưu file lại an toàn
-            self.proc.send_signal(signal.SIGINT)
-            self.proc.wait()
-
-            subprocess.Popen(["notify-send", "Screen Recorder", f"Video saved to {self.filename}", "--icon=video-x-generic"])
-            Gtk.main_quit()
+        subprocess.Popen(["notify-send", "Screen Recorder", f"Video saved to {self.filename}", "--icon=video-x-generic"])
+        Gtk.main_quit()
 
 win = RecorderGUI()
 win.show_all()

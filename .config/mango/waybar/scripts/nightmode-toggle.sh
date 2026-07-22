@@ -1,14 +1,12 @@
 #!/bin/bash
-# ~/.config/waybar/scripts/nightmode-toggle.sh
-# Bật/tắt night mode (lọc ánh sáng xanh) qua wlsunset.
-# Right-click vào module backlight trên waybar sẽ gọi script này.
+# nightmode-toggle.sh - toggle wlsunset cho mắt mày
 
-if pgrep -x wlsunset > /dev/null; then
-    pkill -x wlsunset
-    notify-send -a "Night Mode" "Đã tắt night mode" -i weather-clear-night -t 1500
+PID=$(pgrep -x wlsunset)
+
+if [ -n "$PID" ]; then
+    kill "$PID"
+    notify-send "🌙 Night mode OFF" -t 2000
 else
-    # -t: nhiệt độ ban đêm, -T: nhiệt độ ban ngày (nếu muốn chạy 24/24 thủ công)
-    wlsunset -t 4000 -T 6500 &
-    disown
-    notify-send -a "Night Mode" "Đã bật night mode" -i weather-clear-night -t 1500
+    wlsunset -t 4000 -T 4600 -g 0.85 &
+    notify-send "🌙 Night mode ON" -t 2000
 fi

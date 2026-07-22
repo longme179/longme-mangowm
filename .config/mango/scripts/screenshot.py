@@ -124,7 +124,8 @@ class ScreenshotGUI(Gtk.Window):
             ("󰹑 Full Screen", "grim - | wl-copy", 0, 0),
             ("󰒍 Select Area", "slurp | grim -g - - | wl-copy", 1, 0),
             ("󰒖 Current Monitor", "slurp -o | grim -g - - | wl-copy", 0, 1),
-            (" Save Clipboard to File", "wl-paste -t image/png > ~/Pictures/screenshot_$(date +%s).png", 1, 1)
+            (" Save Clipboard to File", "wl-paste -t image/png > ~/Pictures/screenshot_$(date +%s).png", 1, 1),
+            ("󰕧 Record Video", "python3 ~/.config/mango/scripts/record.py", 0, 2)
         ]
 
         for label, cmd, col, row in actions:

@@ -7,14 +7,7 @@ A minimal, aesthetic, and usability-focused Wayland desktop configuration tailor
 ![Bar](https://img.shields.io/badge/Bar-Waybar-orange)
 ![OS](https://img.shields.io/badge/OS-Arch%20Linux-success)
 
-## ✨ Highlights
 
-- 🎨 **Rose Pine Duotone Theme**: Uniformly applied across Window Manager borders, Waybar, Kitty, Fuzzel, and SwayNC.
-- 🪟 **MangoWM Optimized**: Smart keybinds that avoid conflicts with games (uses `Super` for workspaces instead of `Alt`/`Ctrl`).
-- 📊 **Custom Workspace Grid (`grid.py`)**: A custom GTK Layer Shell popup written in Python. Features a 10-workspace grid layout and supports **Drag & Drop** windows across workspaces smoothly using the `mmsg` API.
-- 🔄 **Auto-reload Waybar**: An `inotifywait` script that monitors CSS/Config files and automatically reloads Waybar the moment you hit save.
-- 🐚 **Fish & Kitty Terminal**: Rounded font setup (FantasqueSansM), DPI fixes, and optimized aliases.
-- 📂 **Dolphin Service Menus**: Custom right-click context menus (Open in Zed, Open Kitty Here, Gowall Convert, Set as Wallpaper).
 
 ## 🛠️ Dependencies
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Script an toàn tuyệt đối để set Cursor/App Icon theme cho MangoWM
 # Tính năng: Idempotent, không vỡ khi Esc, không lỗi khi thiếu theme, validate input.
+# Tích hợp ghi thẳng vào env.conf của MangoWM.
 # Yêu cầu: fuzzel, gsettings, notify-send
 
 # 1. Kiểm tra dependencies
@@ -13,14 +14,12 @@ done
 
 if [ -n "$MISSING" ]; then
     echo "Lỗi: Thiếu các công cụ:$MISSING"
-    # Không thể dùng notify-send nếu chính nó bị thiếu
     if ! echo "$MISSING" | grep -q "notify-send"; then
         notify-send "Lỗi" "Thiếu các công cụ:$MISSING" --icon=dialog-error
     fi
     exit 1
 fi
 
-# Bắt lỗi runtime để báo cho user biết (thay cho set -e)
 trap 'notify-send "Lỗi" "Script dừng bất ngờ ở dòng $LINENO." --icon=dialog-error' ERR
 
 ICON_DIRS=(
@@ -34,7 +33,6 @@ get_themes() {
     for dir in "${ICON_DIRS[@]}"; do
         if [ -d "$dir" ]; then
             if [ "$type" == "cursor" ]; then
-                # Dùng -L để theo symlink (fix lỗi bỏ sót theme symlink)
                 while IFS= read -r line; do
                     found="$found$(basename "$line")\n"
                 done < <(find -L "$dir" -maxdepth 2 -type d -name "cursors" -exec dirname {} \; 2>/dev/null)
@@ -45,7 +43,6 @@ get_themes() {
             fi
         fi
     done
-    # Thêm || true để grep không làm script văng ra nếu không có kết quả
     echo -e "$found" | sort -u | grep -v '^$' || true
 }
 
@@ -59,7 +56,6 @@ if [ -z "$CURSOR_LIST" ]; then
     exit 1
 fi
 
-# Dùng || true để khi bấm Esc (exit code 1), script không chết ngang
 CURSOR_THEME=$(echo -e "$CURSOR_LIST" | fuzzel -d -p "󰇼 Select Cursor Theme: ") || true
 if [ -z "$CURSOR_THEME" ]; then
     echo "Đã hủy thao tác."
@@ -71,7 +67,6 @@ CURSOR_SIZE=$(printf "16\n24\n32\n48" | fuzzel -d -p "󰇒 Select Cursor Size: "
 if [ -z "$CURSOR_SIZE" ]; then
     CURSOR_SIZE=24
 fi
-# Chống injection/gõ bậy, nếu không phải số thì mặc định 24
 if ! [[ "$CURSOR_SIZE" =~ ^[0-9]+$ ]]; then
     CURSOR_SIZE=24
 fi
@@ -84,28 +79,39 @@ fi
 
 echo "Đang áp dụng themes..."
 
-# 5. Ghi đè environment.d
+# 5. Ghi đè environment.d (Cho các app không qua MangoWM)
 mkdir -p "$HOME/.config/environment.d"
 cat <<EOF > "$HOME/.config/environment.d/cursor.conf"
 XCURSOR_THEME=$CURSOR_THEME
 XCURSOR_SIZE=$CURSOR_SIZE
 EOF
 
-# 6. Ghi đè GSettings (Dùng || true để nếu schema lỗi không làm văng script)
+# 6. Ghi đè vào env.conf của MangoWM (Cực kỳ quan trọng cho Firefox/Qt)
+MANGO_ENV="$HOME/.config/mango/env.conf"
+if [ -f "$MANGO_ENV" ]; then
+    # Xóa các dòng XCURSOR cũ nếu có
+    sed -i '/^env=XCURSOR_THEME/d' "$MANGO_ENV"
+    sed -i '/^env=XCURSOR_SIZE/d' "$MANGO_ENV"
+    # Thêm dòng mới vào cuối file
+    echo "env=XCURSOR_THEME,$CURSOR_THEME" >> "$MANGO_ENV"
+    echo "env=XCURSOR_SIZE,$CURSOR_SIZE" >> "$MANGO_ENV"
+fi
+
+# 7. Ghi đè GSettings
 gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_THEME" || true
 gsettings set org.gnome.desktop.interface cursor-size "$CURSOR_SIZE" || true
 if [ -n "$ICON_THEME" ]; then
     gsettings set org.gnome.desktop.interface icon-theme "$ICON_THEME" || true
 fi
 
-# 7. Ghi đè X11 Fallback
+# 8. Ghi đè X11 Fallback
 mkdir -p "$HOME/.icons/default"
 cat <<EOF > "$HOME/.icons/default/index.theme"
 [Icon Theme]
 Inherits=$CURSOR_THEME
 EOF
 
-# 8. Cập nhật Qt an toàn (Append nếu chưa có, Replace nếu đã có)
+# 9. Cập nhật Qt an toàn (Append nếu chưa có, Replace nếu đã có)
 for qt in qt5ct qt6ct; do
     conf="$HOME/.config/$qt/$qt.conf"
     if [ -f "$conf" ]; then
@@ -113,7 +119,6 @@ for qt in qt5ct qt6ct; do
             if grep -q "^icon_theme=" "$conf"; then
                 sed -i "/^icon_theme=/c\icon_theme=$ICON_THEME" "$conf"
             else
-                # Nếu chưa có, append vào dưới cùng
                 echo "icon_theme=$ICON_THEME" >> "$conf"
             fi
         fi
@@ -126,6 +131,6 @@ for qt in qt5ct qt6ct; do
     fi
 done
 
-# 9. Thông báo thành công (Dùng $'...' để xuống dòng thực sự)
-notify-send "Themes Applied!" $'Cursor: '"$CURSOR_THEME"' ('"$CURSOR_SIZE"$')\nIcons: '"${ICON_THEME:-None}"$'\n\nĐăng xuất và đăng nhập lại để áp dụng 100%.' --icon=preferences-desktop-theme
+# 10. Thông báo thành công
+notify-send "Themes Applied!" $'Cursor: '"$CURSOR_THEME"' ('"$CURSOR_SIZE"$')\nIcons: '"${ICON_THEME:-None}"$'\n\nĐăng xuất MangoWM để apply 100%.' --icon=preferences-desktop-theme
 echo "Xong! Hãy đăng xuất MangoWM ra và vào lại để apply toàn bộ."

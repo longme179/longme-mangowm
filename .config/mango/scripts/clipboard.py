@@ -4,6 +4,7 @@
 # Requirements: cliphist, wl-clipboard, python-gobject, gtk3
 # Description: A popup GUI to view, search, and select recently
 #              copied text and images from the clipboard history.
+#              Displays thumbnails for the most recent images instantly.
 #
 
 import gi
@@ -11,10 +12,6 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf
 import subprocess
-import logging
-
-# Cấu hình debug log
-logging.basicConfig(filename='/tmp/clip_debug.log', level=logging.DEBUG, filemode='w')
 
 try:
     gi.require_version('GtkLayerShell', '1.0')
@@ -32,7 +29,6 @@ window { background-color: rgba(25, 23, 36, 0.95); }
 .row { border-bottom: 1px solid rgba(110, 106, 134, 0.3); padding: 8px; }
 .row:selected { background-color: rgba(235, 188, 186, 0.2); }
 .row-label { color: #e0def4; }
-.debug { color: #f6c177; font-size: 10px; margin-top: 10px; }
 """
 
 class ClipboardGUI(Gtk.Window):
@@ -76,28 +72,20 @@ class ClipboardGUI(Gtk.Window):
         self.listbox.connect("row-activated", self.on_row_activated)
         self.scroll.add(self.listbox)
 
-        self.debug_label = Gtk.Label(label="Debug: Scanning history...")
-        self.debug_label.get_style_context().add_class("debug")
-        main_box.pack_start(self.debug_label, False, False, 0)
-
         self.load_history()
 
     def load_history(self):
-        image_count = 0
-        total_items = 0
         try:
             res = subprocess.run(["cliphist", "list"], capture_output=True, text=True)
-            logging.info(f"cliphist list output:\n{res.stdout}")
-
             if res.returncode == 0:
                 lines = res.stdout.strip().split('\n')[:20]
-                MAX_THUMBS = 5
+                image_count = 0
+                MAX_THUMBS = 3 # Chỉ load 3 ảnh gần nhất để tránh lag
 
                 for line in lines:
                     if not line.strip():
                         continue
 
-                    total_items += 1
                     parts = line.split('\t', 1)
                     text = parts[1] if len(parts) > 1 else parts[0]
 
@@ -105,15 +93,12 @@ class ClipboardGUI(Gtk.Window):
                     label_text = text[:40] + '...' if len(text) > 40 else text
 
                     # Nếu là ảnh
-                    if "[[ binary data" in text or "binary data" in text:
-                        logging.info(f"Found binary data line: {line}")
+                    if "[[ binary data" in text:
                         label_text = "Image Snippet"
+                        # Chỉ decode nếu chưa vượt quá giới hạn
                         if image_count < MAX_THUMBS:
                             try:
-                                # Thêm newline vì cliphist decode thường cần
-                                proc = subprocess.run(["cliphist", "decode"], input=(line + '\n').encode('utf-8'), capture_output=True)
-                                logging.info(f"Decode return code: {proc.returncode}, Output length: {len(proc.stdout)}")
-
+                                proc = subprocess.run(["cliphist", "decode"], input=line.encode('utf-8'), capture_output=True)
                                 if proc.returncode == 0 and proc.stdout:
                                     loader = GdkPixbuf.PixbufLoader()
                                     loader.write(proc.stdout)
@@ -126,14 +111,8 @@ class ClipboardGUI(Gtk.Window):
                                         h = int(w / aspect)
                                         thumb = pixbuf.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
                                         image_count += 1
-                                        logging.info("Thumbnail created successfully!")
-                                    else:
-                                        logging.error("Pixbuf creation failed (loader.get_pixbuf() is None)")
-                                else:
-                                    logging.error(f"Decode failed. stderr: {proc.stderr}")
-                            except Exception as e:
-                                logging.error(f"Exception during decode: {str(e)}")
-                                label_text = f"Image (Error: {str(e)[:20]})"
+                            except Exception:
+                                pass
 
                     # Thêm dòng vào listbox
                     row = Gtk.ListBoxRow()
@@ -153,11 +132,9 @@ class ClipboardGUI(Gtk.Window):
 
                     self.listbox.add(row)
 
-        except Exception as e:
-            logging.error(f"Outer exception: {str(e)}")
-            self.debug_label.set_text(f"Debug: Error - {str(e)}")
+        except Exception:
+            pass
 
-        self.debug_label.set_text(f"Debug: Found {image_count} images. Total items: {total_items}")
         self.show_all()
 
     def on_row_activated(self, listbox, row):

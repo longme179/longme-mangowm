@@ -3,13 +3,18 @@
 # Clipboard Manager GUI for MangoWM
 # Requirements: cliphist, wl-clipboard, python-gobject, gtk3
 # Description: A popup GUI to view, search, and select recently
-#              copied text items from the clipboard history.
+#              copied text and images from the clipboard history.
 #
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gdk, GdkPixbuf
 import subprocess
+import logging
+
+# Cấu hình debug log
+logging.basicConfig(filename='/tmp/clip_debug.log', level=logging.DEBUG, filemode='w')
 
 try:
     gi.require_version('GtkLayerShell', '1.0')
@@ -22,11 +27,12 @@ CSS = """
 window { background-color: rgba(25, 23, 36, 0.95); }
 .box { padding: 20px; }
 .title { color: #ebbcba; font-size: 18px; font-weight: bold; margin-bottom: 10px; }
-.scroll { border: 2px solid #6e6a86; border-radius: 12px; min-width: 400px; min-height: 300px; }
+.scroll { border: 2px solid #6e6a86; border-radius: 12px; min-width: 450px; min-height: 350px; }
 .list { background-color: transparent; }
-.row { border-bottom: 1px solid rgba(110, 106, 134, 0.3); }
+.row { border-bottom: 1px solid rgba(110, 106, 134, 0.3); padding: 8px; }
 .row:selected { background-color: rgba(235, 188, 186, 0.2); }
-.row-label { color: #e0def4; padding: 10px; }
+.row-label { color: #e0def4; }
+.debug { color: #f6c177; font-size: 10px; margin-top: 10px; }
 """
 
 class ClipboardGUI(Gtk.Window):
@@ -42,7 +48,7 @@ class ClipboardGUI(Gtk.Window):
         else:
             self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
             self.set_keep_above(True)
-            self.set_default_size(450, 400)
+            self.set_default_size(500, 450)
             self.set_position(Gtk.WindowPosition.CENTER)
 
         self.connect("destroy", Gtk.main_quit)
@@ -70,38 +76,94 @@ class ClipboardGUI(Gtk.Window):
         self.listbox.connect("row-activated", self.on_row_activated)
         self.scroll.add(self.listbox)
 
+        self.debug_label = Gtk.Label(label="Debug: Scanning history...")
+        self.debug_label.get_style_context().add_class("debug")
+        main_box.pack_start(self.debug_label, False, False, 0)
+
         self.load_history()
 
     def load_history(self):
-        for child in self.listbox.get_children():
-            child.destroy()
-
+        image_count = 0
+        total_items = 0
         try:
             res = subprocess.run(["cliphist", "list"], capture_output=True, text=True)
+            logging.info(f"cliphist list output:\n{res.stdout}")
+
             if res.returncode == 0:
-                for line in res.stdout.strip().split('\n')[:20]:
+                lines = res.stdout.strip().split('\n')[:20]
+                MAX_THUMBS = 5
+
+                for line in lines:
                     if not line.strip():
                         continue
+
+                    total_items += 1
                     parts = line.split('\t', 1)
                     text = parts[1] if len(parts) > 1 else parts[0]
-                    short_text = (text[:40] + '...') if len(text) > 40 else text
 
+                    thumb = None
+                    label_text = text[:40] + '...' if len(text) > 40 else text
+
+                    # Nếu là ảnh
+                    if "[[ binary data" in text or "binary data" in text:
+                        logging.info(f"Found binary data line: {line}")
+                        label_text = "Image Snippet"
+                        if image_count < MAX_THUMBS:
+                            try:
+                                # Thêm newline vì cliphist decode thường cần
+                                proc = subprocess.run(["cliphist", "decode"], input=(line + '\n').encode('utf-8'), capture_output=True)
+                                logging.info(f"Decode return code: {proc.returncode}, Output length: {len(proc.stdout)}")
+
+                                if proc.returncode == 0 and proc.stdout:
+                                    loader = GdkPixbuf.PixbufLoader()
+                                    loader.write(proc.stdout)
+                                    loader.close()
+                                    pixbuf = loader.get_pixbuf()
+
+                                    if pixbuf:
+                                        aspect = pixbuf.get_width() / pixbuf.get_height() if pixbuf.get_height() > 0 else 1
+                                        w = 40
+                                        h = int(w / aspect)
+                                        thumb = pixbuf.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
+                                        image_count += 1
+                                        logging.info("Thumbnail created successfully!")
+                                    else:
+                                        logging.error("Pixbuf creation failed (loader.get_pixbuf() is None)")
+                                else:
+                                    logging.error(f"Decode failed. stderr: {proc.stderr}")
+                            except Exception as e:
+                                logging.error(f"Exception during decode: {str(e)}")
+                                label_text = f"Image (Error: {str(e)[:20]})"
+
+                    # Thêm dòng vào listbox
                     row = Gtk.ListBoxRow()
                     row.get_style_context().add_class("row")
-                    label = Gtk.Label(label=short_text, halign=Gtk.Align.START)
-                    label.get_style_context().add_class("row-label")
-                    row.add(label)
                     row.raw_data = line
-                    self.listbox.add(row)
-        except Exception:
-            pass
 
+                    hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                    row.add(hbox)
+
+                    if thumb:
+                        img = Gtk.Image.new_from_pixbuf(thumb)
+                        hbox.pack_start(img, False, False, 0)
+
+                    label = Gtk.Label(label=label_text, halign=Gtk.Align.START)
+                    label.get_style_context().add_class("row-label")
+                    hbox.pack_start(label, True, True, 0)
+
+                    self.listbox.add(row)
+
+        except Exception as e:
+            logging.error(f"Outer exception: {str(e)}")
+            self.debug_label.set_text(f"Debug: Error - {str(e)}")
+
+        self.debug_label.set_text(f"Debug: Found {image_count} images. Total items: {total_items}")
         self.show_all()
 
     def on_row_activated(self, listbox, row):
         raw = row.raw_data
         try:
-            proc = subprocess.run(["cliphist", "decode"], input=raw, capture_output=True, text=True)
+            proc = subprocess.run(["cliphist", "decode"], input=raw.encode('utf-8'), capture_output=True)
             if proc.stdout:
                 subprocess.Popen(["wl-copy", proc.stdout])
         except Exception:

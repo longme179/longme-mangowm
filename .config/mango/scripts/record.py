@@ -123,8 +123,8 @@ class RecorderGUI(Gtk.Window):
             "gpu-screen-recorder",
             "-w", "screen",
             "-f", "30",
-            "-k", "h264",
-            "-q", "very_high",
+            "-k", "h265",
+            "-q", "ultra",
             "-o", self.filename
         ]
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 #
-# Screen Recorder GUI for MangoWM (gpu-screen-recorder)
-# Requirements: gpu-screen-recorder, notify-send, python-gobject, gtk3
-# Description: Records the native Wayland screen at 30fps using GPU encoding.
-#              Automatically captures desktop audio.
+# Screen Recorder GUI for MangoWM (wl-screenrec)
+# Requirements: wl-screenrec, notify-send, python-gobject, gtk3
+# Description: Records the native Wayland screen at 30fps using DMA-BUF.
+#              Extremely low CPU usage. Captures both video and desktop audio.
 #
 
 import gi
@@ -51,15 +51,6 @@ window { background-color: rgba(25, 23, 36, 0.85); }
 .hint { color: #908caa; font-size: 12px; margin-top: 15px; }
 """
 
-def get_default_audio_sink():
-    try:
-        res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True)
-        if res.returncode == 0 and res.stdout.strip():
-            return f"{res.stdout.strip()}.monitor"
-    except Exception:
-        pass
-    return None
-
 class RecorderGUI(Gtk.Window):
     def __init__(self):
         super().__init__(title="Recorder")
@@ -100,14 +91,13 @@ class RecorderGUI(Gtk.Window):
         self.btn_stop.set_no_show_all(True)
         main_box.pack_start(self.btn_stop, False, False, 0)
 
-        self.hint = Gtk.Label(label="Click Start to begin recording (30fps)")
+        self.hint = Gtk.Label(label="Click Start to begin recording (30fps + Audio)")
         self.hint.get_style_context().add_class("hint")
         main_box.pack_start(self.hint, False, False, 0)
 
         self.is_recording = False
         self.proc = None
         self.filename = ""
-        self.log_file = None
 
     def on_start_clicked(self, widget):
         if self.is_recording:
@@ -117,60 +107,26 @@ class RecorderGUI(Gtk.Window):
         os.makedirs(videos_dir, exist_ok=True)
 
         self.filename = f"{videos_dir}/recording_{int(time.time())}.mp4"
-        audio_sink = get_default_audio_sink()
 
+        # Lệnh quay màn hình bằng wl-screenrec
         cmd = [
-            "gpu-screen-recorder",
-            "-w", "screen",
-            "-f", "30",
-            "-k", "h265",
-            "-q", "ultra",
-            "-o", self.filename
+            "wl-screenrec",
+            "--max-fps", "30",       # Giới hạn 30 FPS
+            "--codec", "hevc",       # Codec H265 (nén tốt, hình nét)
+            # "-b", "2 MB"           # Bỏ comment nếu muốn giảm bitrate cho file nhỏ hơn
+            "--audio",               # Bật quay âm thanh
+            "--audio-device", "alsa_output.pci-0000_05_00.6.analog-stereo.monitor", # Thiết bị âm thanh của bạn
+            "-f", self.filename      # Dùng -f để lưu file xuất
         ]
 
-        if audio_sink:
-            cmd.extend(["-a", audio_sink])
-
-        # Mở file log để bắt lỗi stderr của gpu-screen-recorder
-        self.log_file = open("/tmp/gsr_error.log", "w")
-        self.proc = subprocess.Popen(cmd, stderr=self.log_file)
+        self.proc = subprocess.Popen(cmd)
 
         self.is_recording = True
         self.btn_start.hide()
         self.btn_stop.show()
         self.hint.set_label("Recording... Click Stop or ESC to save")
 
-        # Đợi 1 giây và kiểm tra xem process có bị crash ngay không
-        GLib_timeout = False
-        try:
-            from gi.repository import GLib
-            GLib.timeout_add(1000, self.check_crash)
-        except:
-            pass
-
-    def check_crash(self):
-        # Nếu process đã tắt (crash) ngay sau 1 giây
-        if self.proc and self.proc.poll() is not None:
-            self.is_recording = False
-            self.log_file.close()
-
-            # Đọc lỗi
-            err_msg = "Unknown error"
-            try:
-                with open("/tmp/gsr_error.log", "r") as f:
-                    err_msg = f.read().strip()[:100] # Lấy 100 ký tự đầu
-            except:
-                pass
-
-            subprocess.Popen(["notify-send", "Recorder Crashed!", err_msg, "--icon=dialog-error"])
-
-            # Reset UI
-            self.btn_start.show()
-            self.btn_stop.hide()
-            self.hint.set_label(f"Error: {err_msg}")
-            self.btn_stop.set_sensitive(True)
-            self.btn_stop.set_label("󰛊 Stop & Save")
-        return False
+        subprocess.Popen(["notify-send", "Screen Recorder", "Started recording (30fps + Audio)..."])
 
     def on_stop_clicked(self, *args):
         if not self.is_recording:
@@ -187,13 +143,11 @@ class RecorderGUI(Gtk.Window):
 
         if self.proc and self.proc.poll() is None:
             try:
+                # Gửi SIGINT để wl-screenrec đóng file mp4 an toàn
                 self.proc.send_signal(signal.SIGINT)
                 self.proc.wait(timeout=5)
             except Exception:
                 self.proc.kill()
-
-        if self.log_file:
-            self.log_file.close()
 
         subprocess.Popen(["notify-send", "Screen Recorder", f"Video saved to {self.filename}", "--icon=video-x-generic"])
         Gtk.main_quit()

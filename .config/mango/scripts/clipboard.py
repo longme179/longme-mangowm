@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
+#
+# Clipboard Manager GUI for MangoWM
+# Requirements: cliphist, wl-clipboard, python-gobject, gtk3
+# Description: A popup GUI to view, search, and select recently
+#              copied text items from the clipboard history.
+#
+
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk
 import subprocess
 
-# Cơ chế Fallback an toàn
 try:
     gi.require_version('GtkLayerShell', '1.0')
     from gi.repository import GtkLayerShell

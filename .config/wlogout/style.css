@@ -31,3 +31,16 @@ button image {
     min-width: 0px;
     min-height: 0px;
 }
+button {
+    /* ...giữ nguyên các dòng cũ, thêm 3 dòng này... */
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 15%;
+}
+
+#lock      { background-image: image(url("icons/lock.png")); }
+#shutdown  { background-image: image(url("icons/shutdown.png")); }
+#reboot    { background-image: image(url("icons/reboot.png")); }
+#suspend   { background-image: image(url("icons/suspend.png")); }
+#logout    { background-image: image(url("icons/logout.png")); }
+#hibernate { background-image: image(url("icons/hibernate.png")); }

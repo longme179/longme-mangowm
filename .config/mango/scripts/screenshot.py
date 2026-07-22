@@ -138,10 +138,28 @@ class ScreenshotGUI(Gtk.Window):
         main_box.pack_start(hint, False, False, 0)
 
     def on_btn_clicked(self, widget, cmd):
-        subprocess.Popen(cmd, shell=True)
-        # Đóng popup ngay khi chụp để không cản trở màn hình
-        if "Save Clipboard" not in cmd:
+        import time
+
+        # Nếu là nút Save from Clipboard, không cần ẩn popup
+        if "Save Clipboard" in cmd:
+            subprocess.Popen(cmd, shell=True)
             Gtk.main_quit()
+            return
+
+        # Ẩn popup đi để không bị chụp vào ảnh
+        self.hide()
+        # Ép GTK vẽ lại UI ngay lập tức để cửa sổ biến mất
+        while Gtk.events_pending():
+            Gtk.main_iteration()
+
+        # Đợi 300ms cho MangoWM kịp xóa hết popup khỏi màn hình
+        time.sleep(0.3)
+
+        # Thực hiện chụp màn hình
+        subprocess.Popen(cmd, shell=True)
+
+        # Đóng popup hoàn toàn
+        Gtk.main_quit()
 
 win = ScreenshotGUI()
 win.show_all()

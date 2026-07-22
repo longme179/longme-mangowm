@@ -8,7 +8,7 @@ SETUVAR --export QT_AUTO_SCREEN_SCALE_FACTOR:0
 SETUVAR --export QT_IM_MODULE:fcitx
 SETUVAR --export QT_WAYLAND_FORCE_DPI:96
 SETUVAR --export SDL_IM_MODULE:fcitx
-SETUVAR --export XDG_DATA_DIRS:/usr/local/share\x3a/usr/share\x1e/home/longme/\x2elocal/share/flatpak/exports/share\x1e/var/lib/flatpak/exports/share\x1e/usr/local/share\x1e/usr/share
+SETUVAR --export --path XDG_DATA_DIRS:/usr/local/share\x1e/usr/share\x1e/home/longme/\x2elocal/share/flatpak/exports/share\x1e/var/lib/flatpak/exports/share\x1e/usr/local/share\x1e/usr/share
 SETUVAR --export XMODIFIERS:\x40im\x3dfcitx
 SETUVAR __fish_initialized:4300
 SETUVAR _fisher_jorgebucaran_2F_fisher_files:\x7e/\x2econfig/fish/functions/fisher\x2efish\x1e\x7e/\x2econfig/fish/completions/fisher\x2efish

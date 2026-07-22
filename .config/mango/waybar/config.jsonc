@@ -51,12 +51,12 @@
 
     // ---------- GIỮA ----------
     "mpris": {
-        "format": "{player_icon} {dynamic}",
+        "format": "{player_icon} {title}",
         "format-paused": "{status_icon} Paused",
         "player-icons": {
-            "default": "",
-            "spotify": "",
-            "mpv": "",
+            "default": "",
+            "spotify": "",
+            "mpv": "",
             "vlc": "󰕼"
         },
         "status-icons": {

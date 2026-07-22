@@ -31,7 +31,7 @@ fcitx5 --replace -d >/dev/null 2>&1 &
 
 # keep clipboard content
 wl-clip-persist --clipboard regular --reconnect-tries 0 >/dev/null 2>&1 &
-
+wl-paste --watch cliphist store &
 # clipboard content manager
 wl-paste --type text --watch cliphist store >/dev/null 2>&1 &
 

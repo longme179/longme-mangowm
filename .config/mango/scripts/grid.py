@@ -11,33 +11,13 @@
 #   - mmsg (MangoWM IPC client, must be available in PATH)
 #   - A valid icon theme (Adwaita or any desktop icon theme)
 #
-# Package hints:
-#   Arch:
-#     sudo pacman -S python pygobject gtk3
-#     # MangoWM/mmsg: install from MangoWM source/package
-#   Fedora:
-#     sudo dnf install python3-gobject gtk3
-#     # MangoWM/mmsg: install from MangoWM source/package
-#   Debian/Ubuntu:
-#     sudo apt install python3-gi gir1.2-gtk-3.0
-#     # MangoWM/mmsg: install from MangoWM source/package
-#
-# Main behavior:
-#   - Shows 9 workspaces/tags in a 3x3 grid.
-#   - Drag & drop only moves a client to another workspace.
-#   - Drag & drop prefers MangoWM `tagsilent` to avoid focus/view flicker.
-#   - Click app: switch to its workspace and focus it, but DO NOT exit.
-#   - Click workspace:
-#       * switch to that workspace,
-#       * move the overview itself to that workspace,
-#       * keep overview focused,
-#       * DO NOT exit.
-#   - ESC exits the overview.
-#   - Global ESC:
-#       * While this script is running, it attempts to install a temporary
-#         MangoWM `bindp=NONE,Escape,...` binding.
-#       * This allows ESC to close the overview even when another app is focused.
-#       * The binding is removed when the script exits.
+# Exit behavior:
+#   - ESC inside overview: exit.
+#   - Click a workspace tile: switch to that workspace and exit.
+#   - Drag & drop apps between workspaces: move app only, DO NOT exit.
+#   - Click an app:
+#       * By default: focus app but DO NOT exit.
+#       * Set EXIT_ON_APP_CLICK = True if you want click-app to exit too.
 #
 # Important mmsg syntax notes from MangoWM docs:
 #   dispatch <func>[,arg...] [client,<id>]
@@ -59,11 +39,9 @@ import json
 import logging
 import os
 import queue
-import shlex
 import signal
 import socket
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -115,20 +93,20 @@ WINDOW_ROLE = "mangowm-grid-overview"
 
 LOCK_FILE_NAME = "mangowm-grid-overview.lock"
 SOCKET_FILE_NAME = "mangowm-grid-overview.sock"
-GLOBAL_ESC_HELPER_FILE_NAME = "mangowm-grid-overview-esc.py"
 
 IPC_MESSAGE_SHOW = "show"
 IPC_MESSAGE_QUIT = "quit"
 
 SILENT_MOVE_ENV_VAR = "GRID_OVERVIEW_SILENT_MOVE"
 
+# If True, clicking an app will focus it and close the overview.
+# If False, clicking an app will focus it but keep the overview open.
+EXIT_ON_APP_CLICK = True
+
 CLIENT_ID_KEYS = ["id", "client_id", "address", "window", "window_id"]
 CLIENT_TITLE_KEYS = ["title", "name", "window_title"]
 CLIENT_APP_KEYS = ["appid", "app_id", "class", "wm_class", "instance", "command"]
 CLIENT_ROLE_KEYS = ["role", "window_role", "instance", "startup_id"]
-
-GLOBAL_ESC_BEGIN_MARKER = "# mangowm-grid-overview-global-esc-begin"
-GLOBAL_ESC_END_MARKER = "# mangowm-grid-overview-global-esc-end"
 
 DND_TARGETS = [
     Gtk.TargetEntry.new("text/plain", 0, 0),
@@ -288,7 +266,7 @@ def parse_drag_payload(raw: Optional[str]) -> Tuple[str, int]:
 
 def get_runtime_dir() -> str:
     """
-    Return a per-user runtime directory for lock/socket/helper files.
+    Return a per-user runtime directory for lock/socket files.
 
     Prefer XDG_RUNTIME_DIR. Fall back to a private directory under /tmp.
     """
@@ -1692,225 +1670,6 @@ class SingleInstance:
 
 
 # =============================================================================
-# Global ESC binder
-# =============================================================================
-
-
-class GlobalEscBinder:
-    """
-    Installs a temporary MangoWM global ESC binding while this overview runs.
-
-    It appends a marked block to the MangoWM config, then reloads config.
-    On release, it removes the marked block and reloads config again.
-
-    Binding uses `bindp` so ESC is also passed through to the focused client.
-    """
-
-    def __init__(self, sock_path: str) -> None:
-        self.sock_path = sock_path
-        self.helper_path = os.path.join(get_runtime_dir(), GLOBAL_ESC_HELPER_FILE_NAME)
-        self.config_path = self._find_config_path()
-        self.installed = False
-
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
-
-    def install(self) -> bool:
-        if not self.config_path:
-            logger.warning(
-                "Cannot find writable MangoWM config path; global ESC disabled."
-            )
-            return False
-
-        try:
-            self._write_helper()
-            self._remove_block()
-            self._append_block()
-        except Exception as exc:
-            logger.error("Cannot install global ESC bind: %s", exc)
-            try:
-                self._remove_block()
-            except Exception:
-                pass
-            return False
-
-        if MangoWM_IPC._dispatch(["reload_config"], log_errors=False):
-            self.installed = True
-            logger.info("Global ESC bind installed.")
-            return True
-
-        logger.error("reload_config failed; removing global ESC bind.")
-        try:
-            self._remove_block()
-            MangoWM_IPC._dispatch(["reload_config"], log_errors=False)
-        except Exception:
-            pass
-
-        return False
-
-    def release(self) -> None:
-        if not self.config_path:
-            return
-
-        try:
-            changed = self._remove_block()
-            if changed or self.installed:
-                MangoWM_IPC._dispatch(["reload_config"], log_errors=False)
-                logger.info("Global ESC bind removed.")
-        except Exception as exc:
-            logger.error("Cannot remove global ESC bind: %s", exc)
-
-        self.installed = False
-
-        try:
-            if os.path.exists(self.helper_path):
-                os.unlink(self.helper_path)
-        except OSError as exc:
-            logger.debug("Cannot remove global ESC helper: %s", exc)
-
-    # -------------------------------------------------------------------------
-    # Config discovery and manipulation
-    # -------------------------------------------------------------------------
-
-    def _find_config_path(self) -> Optional[str]:
-        xdg_config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(
-            "~/.config"
-        )
-
-        dir_names = ("mango", "mangowm", "MangoWM", "mango-wm")
-        file_names = ("config", "mango.conf", "mangowm.conf", "config.conf")
-
-        candidates: List[str] = []
-
-        for dir_name in dir_names:
-            for file_name in file_names:
-                candidates.append(os.path.join(xdg_config, dir_name, file_name))
-
-        candidates.append(os.path.expanduser("~/.mangowmrc"))
-        candidates.append(os.path.expanduser("~/.mango.conf"))
-
-        # Prefer an existing writable config file.
-        for path in candidates:
-            if os.path.isfile(path) and os.access(path, os.W_OK):
-                return path
-
-        # If a config directory exists, choose a default config path inside it.
-        for dir_name in dir_names:
-            directory = os.path.join(xdg_config, dir_name)
-            if os.path.isdir(directory) and os.access(directory, os.W_OK):
-                return os.path.join(directory, "config")
-
-        return None
-
-    def _write_helper(self) -> None:
-        content = "\n".join(
-            [
-                "#!/usr/bin/env python3",
-                "import socket",
-                "",
-                f"SOCK_PATH = {self.sock_path!r}",
-                "",
-                "try:",
-                "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
-                "    s.settimeout(0.3)",
-                "    s.connect(SOCK_PATH)",
-                "    s.sendall(b'quit')",
-                "    s.recv(16)",
-                "    s.close()",
-                "except Exception:",
-                "    pass",
-                "",
-            ]
-        )
-
-        with open(self.helper_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        try:
-            os.chmod(self.helper_path, 0o755)
-        except OSError as exc:
-            logger.debug("Cannot chmod helper script: %s", exc)
-
-    def _read_config_lines(self) -> List[str]:
-        if not self.config_path:
-            return []
-
-        if not os.path.exists(self.config_path):
-            return []
-
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            return f.readlines()
-
-    def _write_config_lines(self, lines: List[str]) -> None:
-        if not self.config_path:
-            return
-
-        directory = os.path.dirname(self.config_path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-
-        tmp_path = self.config_path + ".tmp"
-
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
-        if os.path.exists(self.config_path):
-            try:
-                st = os.stat(self.config_path)
-                os.chmod(tmp_path, st.st_mode)
-            except OSError as exc:
-                logger.debug("Cannot preserve config permissions: %s", exc)
-
-        os.replace(tmp_path, self.config_path)
-
-    def _remove_block(self) -> bool:
-        lines = self._read_config_lines()
-
-        out: List[str] = []
-        in_block = False
-        changed = False
-
-        for line in lines:
-            stripped = line.strip()
-
-            if stripped == GLOBAL_ESC_BEGIN_MARKER:
-                in_block = True
-                changed = True
-                continue
-
-            if stripped == GLOBAL_ESC_END_MARKER:
-                in_block = False
-                changed = True
-                continue
-
-            if not in_block:
-                out.append(line)
-
-        if changed:
-            self._write_config_lines(out)
-
-        return changed
-
-    def _append_block(self) -> None:
-        lines = self._read_config_lines()
-
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-
-        python_exe = sys.executable or "python3"
-        command = f"{shlex.quote(python_exe)} {shlex.quote(self.helper_path)}"
-
-        lines.append("\n")
-        lines.append(GLOBAL_ESC_BEGIN_MARKER + "\n")
-        lines.append("keymode=common\n")
-        lines.append(f"bindp=NONE,Escape,spawn_shell,{command}\n")
-        lines.append(GLOBAL_ESC_END_MARKER + "\n")
-
-        self._write_config_lines(lines)
-
-
-# =============================================================================
 # Icon provider
 # =============================================================================
 
@@ -2096,7 +1855,9 @@ class AppWidget(Gtk.EventBox):
         if self.main_window.should_suppress_click():
             return False
 
-        # Click app: focus app, but DO NOT exit.
+        # Click app:
+        #   - focus app
+        #   - exit only if EXIT_ON_APP_CLICK is True
         self.main_window.activate_app(self.client)
         return True
 
@@ -2308,9 +2069,8 @@ class WorkspaceWidget(Gtk.EventBox):
             return False
 
         # Click workspace:
-        #   - switch workspace,
-        #   - move overview there,
-        #   - DO NOT exit.
+        #   - switch workspace
+        #   - exit overview
         self.main_window.activate_workspace(self.ws_id)
         return True
 
@@ -2382,6 +2142,7 @@ class WorkspaceWidget(Gtk.EventBox):
             return True
 
         # Move only. Do not view/focus target workspace here.
+        # Drag & drop must never close the overview.
         self.main_window.move_client(
             client_id=client_id,
             source_ws=source_ws,
@@ -2539,7 +2300,7 @@ class GridOverview(Gtk.Window):
         )
 
         # Background click intentionally does nothing.
-        # ESC is the exit trigger.
+        # Exit is triggered by workspace click or ESC only.
         self.bg_eventbox.connect("button-press-event", self.on_bg_clicked)
 
         self.add(self.bg_eventbox)
@@ -3042,11 +2803,16 @@ class GridOverview(Gtk.Window):
             return
 
         if ipc_available:
-            text = (
-                "Drag app to move • Click app to focus • "
-                "Click workspace to switch and move overview there • "
-                "ESC to close (global if MangoWM config binding is available)"
-            )
+            if EXIT_ON_APP_CLICK:
+                text = (
+                    "Drag app to move • Click workspace or app to switch and close • "
+                    "ESC to close"
+                )
+            else:
+                text = (
+                    "Drag app to move • Click workspace to switch and close • "
+                    "Click app to focus without closing • ESC to close"
+                )
         else:
             text = (
                 "MangoWM IPC (mmsg) unavailable or command rejected • "
@@ -3126,6 +2892,9 @@ class GridOverview(Gtk.Window):
         """
         Return True when the current click may be a side effect of drag & drop
         or when an IPC mutation is still pending.
+
+        This is the key guard preventing drag & drop from accidentally exiting
+        the overview.
         """
         if self._closed:
             return True
@@ -3147,7 +2916,12 @@ class GridOverview(Gtk.Window):
     # -------------------------------------------------------------------------
 
     def activate_app(self, client: ClientState) -> None:
-        """Click app: switch workspace + focus app, but do not exit."""
+        """
+        Click app:
+          - switch to app workspace
+          - focus app
+          - exit only if EXIT_ON_APP_CLICK is True
+        """
         if self._closed:
             return
 
@@ -3167,17 +2941,30 @@ class GridOverview(Gtk.Window):
                 logger.error("Error while activating app %s: %s", client.id, exc)
             finally:
                 if not self._closed:
-                    GLib.idle_add(self._on_user_action_done, success)
+                    GLib.idle_add(self._on_activate_app_done, success)
 
         self._ipc_worker.submit(task)
+
+    def _on_activate_app_done(self, success: bool) -> bool:
+        if self._closed:
+            return False
+
+        if not success:
+            self._ipc_available = False
+            self._update_hint(False)
+
+        if EXIT_ON_APP_CLICK:
+            self.close_app()
+        else:
+            self.request_sync(delay_ms=SYNC_AFTER_DROP_MS)
+
+        return False
 
     def activate_workspace(self, ws_id: int) -> None:
         """
         Click workspace:
-          - move overview to that workspace,
-          - switch view,
-          - focus overview,
-          - do not exit.
+          - switch workspace
+          - exit overview
         """
         if self._closed:
             return
@@ -3192,31 +2979,30 @@ class GridOverview(Gtk.Window):
             if self._closed:
                 return
 
-            success = False
             try:
-                success = self._move_overview_to_ws_blocking(ws_id, focus_self=True)
+                MangoWM_IPC.dispatch_view(ws_id)
             except Exception as exc:
                 logger.error("Error while activating workspace %s: %s", ws_id, exc)
             finally:
                 if not self._closed:
-                    GLib.idle_add(self._on_user_action_done, success)
+                    GLib.idle_add(self._on_activate_workspace_done)
 
         self._ipc_worker.submit(task)
 
-    def _on_user_action_done(self, success: bool) -> bool:
+    def _on_activate_workspace_done(self) -> bool:
         if self._closed:
             return False
 
-        if not success:
-            self._ipc_available = False
-            self._update_hint(False)
-        else:
-            # Watch streams will often update state already; this is a fallback.
-            self.request_sync(delay_ms=SYNC_AFTER_DROP_MS)
-
+        # Workspace selection is an intentional exit action.
+        self.close_app()
         return False
 
     def move_client(self, client_id: str, source_ws: int, target_ws: int) -> None:
+        """
+        Drag & drop move handler.
+
+        This must never close the overview.
+        """
         if self._closed:
             return
 
@@ -3276,7 +3062,8 @@ class GridOverview(Gtk.Window):
         _widget: Gtk.Widget,
         event: Gdk.EventButton,
     ) -> bool:
-        # Intentionally no close. ESC is the exit trigger.
+        # Intentionally no close.
+        # Exit is triggered by workspace click or ESC only.
         return False
 
     def on_key_press(
@@ -3312,9 +3099,6 @@ def main() -> int:
     if not single.ensure_single_instance():
         return 0
 
-    esc_binder = GlobalEscBinder(single.sock_path)
-    esc_binder.install()
-
     app: Optional[GridOverview] = None
 
     try:
@@ -3324,7 +3108,6 @@ def main() -> int:
         if app is not None:
             app.close_app()
     finally:
-        esc_binder.release()
         single.release()
 
     return 0

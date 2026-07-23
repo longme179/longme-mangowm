@@ -25,34 +25,28 @@
 # Main behavior:
 #   - Shows 9 workspaces/tags in a 3x3 grid.
 #   - Drag & drop only moves a client to another workspace.
-#   - Drag & drop does not intentionally switch workspace, does not focus
-#     the moved app, and does not close the GUI.
+#   - Drag & drop prefers MangoWM `tagsilent` to avoid focus/view flicker.
 #   - Click app: switch to its workspace and focus it, but DO NOT exit.
 #   - Click workspace:
 #       * switch to that workspace,
 #       * move the overview itself to that workspace,
 #       * keep overview focused,
 #       * DO NOT exit.
-#   - ESC is the only exit trigger.
-#   - Single-instance behavior:
-#       * If an instance is already running, a new invocation asks the old
-#         instance to move itself to the current workspace and then exits.
-#       * If the old instance does not respond, the new invocation terminates
-#         the old instance and starts a fresh one.
+#   - ESC exits the overview.
+#   - Global ESC:
+#       * While this script is running, it attempts to install a temporary
+#         MangoWM `bindp=NONE,Escape,...` binding.
+#       * This allows ESC to close the overview even when another app is focused.
+#       * The binding is removed when the script exits.
 #
-# Important mmsg syntax note:
-#   Based on `mmsg --help`:
-#     dispatch <func>[,arg...] [client,<id>]
-#   `client,<id>` is a separate token, at the beginning or end.
+# Important mmsg syntax notes from MangoWM docs:
+#   dispatch <func>[,arg...] [client,<id>]
 #
-# Silent move:
-#   This script prefers a silent move command when available.
-#   By default it tries `tag_silent` variants.
-#
-#   If your MangoWM build uses a different silent-move command, set:
-#     GRID_OVERVIEW_SILENT_MOVE="tag_silent,{ws},0 client,{client_id}"
-#   or:
-#     GRID_OVERVIEW_SILENT_MOVE="client,{client_id} tag_silent,{ws},0"
+#   Relevant dispatchers:
+#     view <tag> [,synctag]
+#     tag <tag> [,synctag]
+#     tagsilent <tag>
+#     focusid            (target via client,<id>)
 #
 # =============================================================================
 
@@ -65,9 +59,11 @@ import json
 import logging
 import os
 import queue
+import shlex
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -119,6 +115,7 @@ WINDOW_ROLE = "mangowm-grid-overview"
 
 LOCK_FILE_NAME = "mangowm-grid-overview.lock"
 SOCKET_FILE_NAME = "mangowm-grid-overview.sock"
+GLOBAL_ESC_HELPER_FILE_NAME = "mangowm-grid-overview-esc.py"
 
 IPC_MESSAGE_SHOW = "show"
 IPC_MESSAGE_QUIT = "quit"
@@ -129,6 +126,9 @@ CLIENT_ID_KEYS = ["id", "client_id", "address", "window", "window_id"]
 CLIENT_TITLE_KEYS = ["title", "name", "window_title"]
 CLIENT_APP_KEYS = ["appid", "app_id", "class", "wm_class", "instance", "command"]
 CLIENT_ROLE_KEYS = ["role", "window_role", "instance", "startup_id"]
+
+GLOBAL_ESC_BEGIN_MARKER = "# mangowm-grid-overview-global-esc-begin"
+GLOBAL_ESC_END_MARKER = "# mangowm-grid-overview-global-esc-end"
 
 DND_TARGETS = [
     Gtk.TargetEntry.new("text/plain", 0, 0),
@@ -288,7 +288,7 @@ def parse_drag_payload(raw: Optional[str]) -> Tuple[str, int]:
 
 def get_runtime_dir() -> str:
     """
-    Return a per-user runtime directory for lock/socket files.
+    Return a per-user runtime directory for lock/socket/helper files.
 
     Prefer XDG_RUNTIME_DIR. Fall back to a private directory under /tmp.
     """
@@ -746,9 +746,10 @@ class MangoWM_IPC:
         Get current workspace.
 
         Strategy:
-          1. Fallback through focusing-client.
-          2. Try all-monitors for active/current tag.
-          3. Fallback to workspace 1 when unknown.
+          1. focusing-client.
+          2. all-monitors.
+          3. all-tags.
+          4. fallback to workspace 1 when unknown.
         """
         data = MangoWM_IPC._query(["get", "focusing-client"], log_errors=False)
         if isinstance(data, (list, tuple)) and data:
@@ -770,6 +771,11 @@ class MangoWM_IPC:
                 return ws
 
         data = MangoWM_IPC._query(["get", "all-monitors"], log_errors=False)
+        ws = MangoWM_IPC._extract_ws_index(data)
+        if ws:
+            return ws
+
+        data = MangoWM_IPC._query(["get", "all-tags"], log_errors=False)
         ws = MangoWM_IPC._extract_ws_index(data)
         if ws:
             return ws
@@ -936,34 +942,33 @@ class MangoWM_IPC:
         if not client_id:
             return False
 
+        # MangoWM docs: focusid can target any window via `client,<id>`.
         variants: List[List[str]] = [
-            # Legacy form used by older script revisions.
+            ["focusid", f"client,{client_id}"],
+            [f"client,{client_id}", "focusid"],
+            # Legacy fallbacks for older revisions.
             [f"focus,{client_id}"],
-            # Help-compatible forms: `dispatch focus client,<id>`
             ["focus", f"client,{client_id}"],
-            [f"client,{client_id}", "focus"],
         ]
         return MangoWM_IPC._dispatch_variants(variants, f"focus client {client_id}")
 
     @staticmethod
     def tag_client_to_workspace(client_id: str, ws: int) -> bool:
         """
-        Tag a client into a workspace using normal tag command.
+        Tag a client into a workspace using normal `tag`.
 
-        Correct syntax according to `mmsg --help`:
-          dispatch tag,<ws>,0 client,<id>
-        or:
-          dispatch client,<id> tag,<ws>,0
+        MangoWM docs:
+          dispatch tag,<tag> [,synctag] [client,<id>]
         """
         client_id = (client_id or "").strip()
         if not client_id or not (1 <= ws <= NUM_WORKSPACES):
             return False
 
         variants: List[List[str]] = [
-            [f"tag,{ws},0", f"client,{client_id}"],
-            [f"client,{client_id}", f"tag,{ws},0"],
             [f"tag,{ws}", f"client,{client_id}"],
             [f"client,{client_id}", f"tag,{ws}"],
+            [f"tag,{ws},0", f"client,{client_id}"],
+            [f"client,{client_id}", f"tag,{ws},0"],
         ]
 
         return MangoWM_IPC._dispatch_variants(
@@ -978,10 +983,10 @@ class MangoWM_IPC:
     @staticmethod
     def _custom_silent_move_variants(client_id: str, ws: int) -> List[List[str]]:
         """
-        Allow user to define exact silent-move syntax.
+        Allow user to define exact silent-move syntax if needed.
 
         Example:
-          GRID_OVERVIEW_SILENT_MOVE="tag_silent,{ws},0 client,{client_id}"
+          GRID_OVERVIEW_SILENT_MOVE="tagsilent,{ws} client,{client_id}"
         """
         template = os.environ.get(SILENT_MOVE_ENV_VAR, "").strip()
         if not template:
@@ -1004,8 +1009,8 @@ class MangoWM_IPC:
         """
         Build silent-tag variants.
 
-        Built-in variants assume MangoWM may provide `tag_silent`.
-        If your build uses another function name, use GRID_OVERVIEW_SILENT_MOVE.
+        MangoWM docs define `tagsilent` as:
+          tagsilent 1-9 : Move window to tag without focusing it.
         """
         client_id = (client_id or "").strip()
         if not client_id or not (1 <= ws <= NUM_WORKSPACES):
@@ -1015,10 +1020,11 @@ class MangoWM_IPC:
 
         variants.extend(
             [
-                [f"tag_silent,{ws},0", f"client,{client_id}"],
-                [f"client,{client_id}", f"tag_silent,{ws},0"],
-                [f"tag_silent,{ws}", f"client,{client_id}"],
-                [f"client,{client_id}", f"tag_silent,{ws}"],
+                [f"tagsilent,{ws}", f"client,{client_id}"],
+                [f"client,{client_id}", f"tagsilent,{ws}"],
+                # Some builds may still accept an optional trailing argument.
+                [f"tagsilent,{ws},0", f"client,{client_id}"],
+                [f"client,{client_id}", f"tagsilent,{ws},0"],
             ]
         )
 
@@ -1277,7 +1283,7 @@ class MangoWM_IPC:
 
         prev_ws = state.current_ws
 
-        # Preferred path: silent move.
+        # Preferred path: silent move using `tagsilent`.
         if MangoWM_IPC._move_client_silent_with_verify(
             client_id=client_id,
             target_ws=target_ws,
@@ -1683,6 +1689,225 @@ class SingleInstance:
             logger.error("No permission to terminate PID %s.", pid)
         except OSError as exc:
             logger.error("Cannot terminate PID %s: %s", pid, exc)
+
+
+# =============================================================================
+# Global ESC binder
+# =============================================================================
+
+
+class GlobalEscBinder:
+    """
+    Installs a temporary MangoWM global ESC binding while this overview runs.
+
+    It appends a marked block to the MangoWM config, then reloads config.
+    On release, it removes the marked block and reloads config again.
+
+    Binding uses `bindp` so ESC is also passed through to the focused client.
+    """
+
+    def __init__(self, sock_path: str) -> None:
+        self.sock_path = sock_path
+        self.helper_path = os.path.join(get_runtime_dir(), GLOBAL_ESC_HELPER_FILE_NAME)
+        self.config_path = self._find_config_path()
+        self.installed = False
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def install(self) -> bool:
+        if not self.config_path:
+            logger.warning(
+                "Cannot find writable MangoWM config path; global ESC disabled."
+            )
+            return False
+
+        try:
+            self._write_helper()
+            self._remove_block()
+            self._append_block()
+        except Exception as exc:
+            logger.error("Cannot install global ESC bind: %s", exc)
+            try:
+                self._remove_block()
+            except Exception:
+                pass
+            return False
+
+        if MangoWM_IPC._dispatch(["reload_config"], log_errors=False):
+            self.installed = True
+            logger.info("Global ESC bind installed.")
+            return True
+
+        logger.error("reload_config failed; removing global ESC bind.")
+        try:
+            self._remove_block()
+            MangoWM_IPC._dispatch(["reload_config"], log_errors=False)
+        except Exception:
+            pass
+
+        return False
+
+    def release(self) -> None:
+        if not self.config_path:
+            return
+
+        try:
+            changed = self._remove_block()
+            if changed or self.installed:
+                MangoWM_IPC._dispatch(["reload_config"], log_errors=False)
+                logger.info("Global ESC bind removed.")
+        except Exception as exc:
+            logger.error("Cannot remove global ESC bind: %s", exc)
+
+        self.installed = False
+
+        try:
+            if os.path.exists(self.helper_path):
+                os.unlink(self.helper_path)
+        except OSError as exc:
+            logger.debug("Cannot remove global ESC helper: %s", exc)
+
+    # -------------------------------------------------------------------------
+    # Config discovery and manipulation
+    # -------------------------------------------------------------------------
+
+    def _find_config_path(self) -> Optional[str]:
+        xdg_config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(
+            "~/.config"
+        )
+
+        dir_names = ("mango", "mangowm", "MangoWM", "mango-wm")
+        file_names = ("config", "mango.conf", "mangowm.conf", "config.conf")
+
+        candidates: List[str] = []
+
+        for dir_name in dir_names:
+            for file_name in file_names:
+                candidates.append(os.path.join(xdg_config, dir_name, file_name))
+
+        candidates.append(os.path.expanduser("~/.mangowmrc"))
+        candidates.append(os.path.expanduser("~/.mango.conf"))
+
+        # Prefer an existing writable config file.
+        for path in candidates:
+            if os.path.isfile(path) and os.access(path, os.W_OK):
+                return path
+
+        # If a config directory exists, choose a default config path inside it.
+        for dir_name in dir_names:
+            directory = os.path.join(xdg_config, dir_name)
+            if os.path.isdir(directory) and os.access(directory, os.W_OK):
+                return os.path.join(directory, "config")
+
+        return None
+
+    def _write_helper(self) -> None:
+        content = "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import socket",
+                "",
+                f"SOCK_PATH = {self.sock_path!r}",
+                "",
+                "try:",
+                "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
+                "    s.settimeout(0.3)",
+                "    s.connect(SOCK_PATH)",
+                "    s.sendall(b'quit')",
+                "    s.recv(16)",
+                "    s.close()",
+                "except Exception:",
+                "    pass",
+                "",
+            ]
+        )
+
+        with open(self.helper_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        try:
+            os.chmod(self.helper_path, 0o755)
+        except OSError as exc:
+            logger.debug("Cannot chmod helper script: %s", exc)
+
+    def _read_config_lines(self) -> List[str]:
+        if not self.config_path:
+            return []
+
+        if not os.path.exists(self.config_path):
+            return []
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            return f.readlines()
+
+    def _write_config_lines(self, lines: List[str]) -> None:
+        if not self.config_path:
+            return
+
+        directory = os.path.dirname(self.config_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        tmp_path = self.config_path + ".tmp"
+
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        if os.path.exists(self.config_path):
+            try:
+                st = os.stat(self.config_path)
+                os.chmod(tmp_path, st.st_mode)
+            except OSError as exc:
+                logger.debug("Cannot preserve config permissions: %s", exc)
+
+        os.replace(tmp_path, self.config_path)
+
+    def _remove_block(self) -> bool:
+        lines = self._read_config_lines()
+
+        out: List[str] = []
+        in_block = False
+        changed = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if stripped == GLOBAL_ESC_BEGIN_MARKER:
+                in_block = True
+                changed = True
+                continue
+
+            if stripped == GLOBAL_ESC_END_MARKER:
+                in_block = False
+                changed = True
+                continue
+
+            if not in_block:
+                out.append(line)
+
+        if changed:
+            self._write_config_lines(out)
+
+        return changed
+
+    def _append_block(self) -> None:
+        lines = self._read_config_lines()
+
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+
+        python_exe = sys.executable or "python3"
+        command = f"{shlex.quote(python_exe)} {shlex.quote(self.helper_path)}"
+
+        lines.append("\n")
+        lines.append(GLOBAL_ESC_BEGIN_MARKER + "\n")
+        lines.append("keymode=common\n")
+        lines.append(f"bindp=NONE,Escape,spawn_shell,{command}\n")
+        lines.append(GLOBAL_ESC_END_MARKER + "\n")
+
+        self._write_config_lines(lines)
 
 
 # =============================================================================
@@ -2314,7 +2539,7 @@ class GridOverview(Gtk.Window):
         )
 
         # Background click intentionally does nothing.
-        # ESC is the only exit trigger.
+        # ESC is the exit trigger.
         self.bg_eventbox.connect("button-press-event", self.on_bg_clicked)
 
         self.add(self.bg_eventbox)
@@ -2339,7 +2564,7 @@ class GridOverview(Gtk.Window):
         self.hint_label = Gtk.Label()
         self.hint_label.get_style_context().add_class("hint-label")
         self.hint_label.set_justify(Gtk.Justification.CENTER)
-        self.hint_label.set_max_width_chars(100)
+        self.hint_label.set_max_width_chars(110)
 
         self.outer_box.pack_start(self.hint_label, False, False, 0)
 
@@ -2820,7 +3045,7 @@ class GridOverview(Gtk.Window):
             text = (
                 "Drag app to move • Click app to focus • "
                 "Click workspace to switch and move overview there • "
-                "ESC to close"
+                "ESC to close (global if MangoWM config binding is available)"
             )
         else:
             text = (
@@ -3051,7 +3276,7 @@ class GridOverview(Gtk.Window):
         _widget: Gtk.Widget,
         event: Gdk.EventButton,
     ) -> bool:
-        # Intentionally no close. ESC is the only exit trigger.
+        # Intentionally no close. ESC is the exit trigger.
         return False
 
     def on_key_press(
@@ -3071,11 +3296,24 @@ class GridOverview(Gtk.Window):
 # =============================================================================
 
 
+def _install_signal_handlers() -> None:
+    def handler(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+
 def main() -> int:
+    _install_signal_handlers()
+
     single = SingleInstance()
 
     if not single.ensure_single_instance():
         return 0
+
+    esc_binder = GlobalEscBinder(single.sock_path)
+    esc_binder.install()
 
     app: Optional[GridOverview] = None
 
@@ -3086,6 +3324,7 @@ def main() -> int:
         if app is not None:
             app.close_app()
     finally:
+        esc_binder.release()
         single.release()
 
     return 0

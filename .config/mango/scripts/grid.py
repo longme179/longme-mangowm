@@ -25,16 +25,34 @@
 # Main behavior:
 #   - Shows 9 workspaces/tags in a 3x3 grid.
 #   - Drag & drop only moves a client to another workspace.
-#   - Drag & drop does not switch workspace, does not focus the moved app,
-#     and does not close the GUI.
-#   - Single-click app: switch to its workspace, focus it, close GUI.
-#   - Single-click workspace: switch workspace, close GUI.
-#   - ESC or click empty dialog background: close GUI.
+#   - Drag & drop does not intentionally switch workspace, does not focus
+#     the moved app, and does not close the GUI.
+#   - Click app: switch to its workspace and focus it, but DO NOT exit.
+#   - Click workspace:
+#       * switch to that workspace,
+#       * move the overview itself to that workspace,
+#       * keep overview focused,
+#       * DO NOT exit.
+#   - ESC is the only exit trigger.
 #   - Single-instance behavior:
 #       * If an instance is already running, a new invocation asks the old
 #         instance to move itself to the current workspace and then exits.
 #       * If the old instance does not respond, the new invocation terminates
 #         the old instance and starts a fresh one.
+#
+# Important mmsg syntax note:
+#   Based on `mmsg --help`:
+#     dispatch <func>[,arg...] [client,<id>]
+#   `client,<id>` is a separate token, at the beginning or end.
+#
+# Silent move:
+#   This script prefers a silent move command when available.
+#   By default it tries `tag_silent` variants.
+#
+#   If your MangoWM build uses a different silent-move command, set:
+#     GRID_OVERVIEW_SILENT_MOVE="tag_silent,{ws},0 client,{client_id}"
+#   or:
+#     GRID_OVERVIEW_SILENT_MOVE="client,{client_id} tag_silent,{ws},0"
 #
 # =============================================================================
 
@@ -75,10 +93,11 @@ NUM_WORKSPACES = 9
 GRID_COLUMNS = 3
 GRID_ROWS = (NUM_WORKSPACES + GRID_COLUMNS - 1) // GRID_COLUMNS
 
-POLL_INTERVAL_MS = 1200
-POLL_INTERVAL_IPC_DOWN_MS = 3000
+POLL_INTERVAL_MS = 2500
+POLL_INTERVAL_IPC_DOWN_MS = 5000
 
 SYNC_DEBOUNCE_MS = 160
+WATCH_EVENT_SYNC_DEBOUNCE_MS = 120
 SYNC_AFTER_DROP_MS = 140
 SYNC_AFTER_DRAG_END_MS = 220
 
@@ -87,6 +106,10 @@ DRAG_FAILSAFE_SECONDS = 10
 
 IPC_COMMAND_TIMEOUT = 0.90
 IPC_DISPATCH_TIMEOUT = 0.60
+
+MOVE_VERIFY_SLEEP_SECONDS = 0.015
+MOVE_LATE_CHECK_SLEEP_SECONDS = 0.020
+WATCH_RESTART_DELAY_SECONDS = 2.0
 
 MAX_CACHED_ICONS = 512
 
@@ -99,6 +122,13 @@ SOCKET_FILE_NAME = "mangowm-grid-overview.sock"
 
 IPC_MESSAGE_SHOW = "show"
 IPC_MESSAGE_QUIT = "quit"
+
+SILENT_MOVE_ENV_VAR = "GRID_OVERVIEW_SILENT_MOVE"
+
+CLIENT_ID_KEYS = ["id", "client_id", "address", "window", "window_id"]
+CLIENT_TITLE_KEYS = ["title", "name", "window_title"]
+CLIENT_APP_KEYS = ["appid", "app_id", "class", "wm_class", "instance", "command"]
+CLIENT_ROLE_KEYS = ["role", "window_role", "instance", "startup_id"]
 
 DND_TARGETS = [
     Gtk.TargetEntry.new("text/plain", 0, 0),
@@ -230,7 +260,7 @@ def parse_drag_payload(raw: Optional[str]) -> Tuple[str, int]:
     """
     Parse drag payload.
 
-    New payload: JSON {"id": "...", "source_ws": int}
+    Payload: JSON {"id": "...", "source_ws": int}
     Fallback: legacy plain text client id.
     """
     if not raw:
@@ -308,10 +338,6 @@ class MangoWM_IPC:
     All commands are intended to be executed from a worker thread, never
     directly from the GTK main thread.
     """
-
-    _current_ws_command: Optional[List[str]] = None
-    _current_ws_probed: bool = False
-    _probe_lock = threading.Lock()
 
     # -------------------------------------------------------------------------
     # Low-level subprocess helpers
@@ -464,12 +490,7 @@ class MangoWM_IPC:
 
     @staticmethod
     def _dispatch_variants(variants: List[List[str]], action_name: str) -> bool:
-        """
-        Try multiple dispatch syntax variants.
-
-        MangoWM builds may differ slightly in command parsing. The old syntax
-        is tried first, then common fallbacks.
-        """
+        """Try multiple dispatch syntax variants and log when all fail."""
         for args in variants:
             if MangoWM_IPC._dispatch(args, log_errors=False):
                 return True
@@ -481,6 +502,14 @@ class MangoWM_IPC:
             action_name,
             len(variants),
         )
+        return False
+
+    @staticmethod
+    def _try_dispatch_variants(variants: List[List[str]]) -> bool:
+        """Try multiple dispatch variants without logging all-failure."""
+        for args in variants:
+            if MangoWM_IPC._dispatch(args, log_errors=False):
+                return True
         return False
 
     # -------------------------------------------------------------------------
@@ -660,6 +689,10 @@ class MangoWM_IPC:
                 "active_workspace",
                 "focused_workspace",
                 "selected_workspace",
+                "current_tag",
+                "active_tag",
+                "focused_tag",
+                "selected_tag",
                 "workspace",
                 "tag",
                 "index",
@@ -678,6 +711,31 @@ class MangoWM_IPC:
 
         return None
 
+    @staticmethod
+    def _is_own_client(item: Dict[str, Any], exclude_client_id: Optional[str]) -> bool:
+        """Return True when this client item looks like this overview window."""
+        client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
+        if exclude_client_id and client_id and client_id == exclude_client_id:
+            return True
+
+        pid = MangoWM_IPC._extract_pid(item)
+        if pid is not None and pid == os.getpid():
+            return True
+
+        title = MangoWM_IPC._first_str(item, CLIENT_TITLE_KEYS) or ""
+        if title.strip().lower() == WINDOW_TITLE.lower():
+            return True
+
+        role = MangoWM_IPC._first_str(item, CLIENT_ROLE_KEYS) or ""
+        if WINDOW_ROLE.lower() in role.lower():
+            return True
+
+        app = MangoWM_IPC._first_str(item, CLIENT_APP_KEYS) or ""
+        if APP_NAME.lower() in app.lower():
+            return True
+
+        return False
+
     # -------------------------------------------------------------------------
     # State queries
     # -------------------------------------------------------------------------
@@ -688,51 +746,10 @@ class MangoWM_IPC:
         Get current workspace.
 
         Strategy:
-          1. Try dedicated endpoints and cache the first working one.
-          2. Fallback to focusing-client.
+          1. Fallback through focusing-client.
+          2. Try all-monitors for active/current tag.
           3. Fallback to workspace 1 when unknown.
         """
-        with MangoWM_IPC._probe_lock:
-            probed = MangoWM_IPC._current_ws_probed
-            cached_cmd = MangoWM_IPC._current_ws_command
-
-        if probed and cached_cmd is not None:
-            data = MangoWM_IPC._query(cached_cmd, timeout=0.35, log_errors=False)
-            ws = MangoWM_IPC._extract_ws_index(data)
-            if ws:
-                return ws
-
-        if not probed:
-            candidate_commands: Tuple[List[str], ...] = (
-                ["get", "focused-workspace"],
-                ["get", "current-workspace"],
-                ["get", "current-tag"],
-                ["get", "focusing-workspace"],
-                ["get", "active-workspace"],
-                ["get", "monitors"],
-                ["get", "all-monitors"],
-                ["get", "active-monitor"],
-            )
-
-            found_cmd: Optional[List[str]] = None
-            found_ws: Optional[int] = None
-
-            for cmd in candidate_commands:
-                data = MangoWM_IPC._query(cmd, timeout=0.35, log_errors=False)
-                ws = MangoWM_IPC._extract_ws_index(data)
-                if ws:
-                    found_cmd = cmd
-                    found_ws = ws
-                    break
-
-            with MangoWM_IPC._probe_lock:
-                MangoWM_IPC._current_ws_probed = True
-                MangoWM_IPC._current_ws_command = found_cmd
-
-            if found_ws:
-                return found_ws
-
-        # Fallback: focused client.
         data = MangoWM_IPC._query(["get", "focusing-client"], log_errors=False)
         if isinstance(data, (list, tuple)) and data:
             data = data[0]
@@ -752,6 +769,11 @@ class MangoWM_IPC:
             if ws:
                 return ws
 
+        data = MangoWM_IPC._query(["get", "all-monitors"], log_errors=False)
+        ws = MangoWM_IPC._extract_ws_index(data)
+        if ws:
+            return ws
+
         return 1
 
     @staticmethod
@@ -764,24 +786,21 @@ class MangoWM_IPC:
         if not isinstance(data, dict):
             return None
 
-        direct = MangoWM_IPC._first_str(
-            data,
-            ["id", "client_id", "address", "window", "window_id"],
-        )
+        direct = MangoWM_IPC._first_str(data, CLIENT_ID_KEYS)
         if direct:
             return direct
 
         nested = data.get("client")
         if isinstance(nested, dict):
-            return MangoWM_IPC._first_str(
-                nested,
-                ["id", "client_id", "address", "window", "window_id"],
-            )
+            return MangoWM_IPC._first_str(nested, CLIENT_ID_KEYS)
 
         return None
 
     @staticmethod
-    def get_overview_state() -> OverviewState:
+    def get_overview_state(
+        exclude_client_id: Optional[str] = None,
+        exclude_own: bool = True,
+    ) -> OverviewState:
         current_ws = MangoWM_IPC.get_current_ws()
         data = MangoWM_IPC._query(["get", "all-clients"], log_errors=True)
 
@@ -797,23 +816,16 @@ class MangoWM_IPC:
             if not isinstance(item, dict):
                 continue
 
-            client_id = MangoWM_IPC._first_str(
-                item,
-                ["id", "client_id", "address", "window", "window_id"],
-            )
+            if exclude_own and MangoWM_IPC._is_own_client(item, exclude_client_id):
+                continue
+
+            client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
             if not client_id:
                 continue
 
-            app_id = (
-                MangoWM_IPC._first_str(
-                    item,
-                    ["appid", "app_id", "class", "wm_class", "instance", "command"],
-                )
-                or ""
-            )
-
+            app_id = MangoWM_IPC._first_str(item, CLIENT_APP_KEYS) or ""
             title = (
-                MangoWM_IPC._first_str(item, ["title", "name", "window_title"])
+                MangoWM_IPC._first_str(item, CLIENT_TITLE_KEYS)
                 or app_id
                 or "Unknown Window"
             )
@@ -864,8 +876,6 @@ class MangoWM_IPC:
         data = MangoWM_IPC._query(["get", "all-clients"], log_errors=False)
         raw_clients = MangoWM_IPC._extract_client_list(data)
 
-        id_keys = ["id", "client_id", "address", "window", "window_id"]
-
         # Pass 1: PID.
         for item in raw_clients:
             if not isinstance(item, dict):
@@ -873,7 +883,7 @@ class MangoWM_IPC:
 
             item_pid = MangoWM_IPC._extract_pid(item)
             if item_pid == pid:
-                client_id = MangoWM_IPC._first_str(item, id_keys)
+                client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
                 if client_id:
                     return client_id
 
@@ -886,27 +896,13 @@ class MangoWM_IPC:
             if not isinstance(item, dict):
                 continue
 
-            client_id = MangoWM_IPC._first_str(item, id_keys)
+            client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
             if not client_id:
                 continue
 
-            item_title = (
-                MangoWM_IPC._first_str(item, ["title", "name", "window_title"]) or ""
-            ).strip()
-            item_role = (
-                MangoWM_IPC._first_str(
-                    item,
-                    ["role", "window_role", "instance", "startup_id"],
-                )
-                or ""
-            ).strip()
-            item_app = (
-                MangoWM_IPC._first_str(
-                    item,
-                    ["appid", "app_id", "class", "wm_class", "command"],
-                )
-                or ""
-            ).strip()
+            item_title = (MangoWM_IPC._first_str(item, CLIENT_TITLE_KEYS) or "").strip()
+            item_role = (MangoWM_IPC._first_str(item, CLIENT_ROLE_KEYS) or "").strip()
+            item_app = (MangoWM_IPC._first_str(item, CLIENT_APP_KEYS) or "").strip()
 
             if title_l and item_title.lower() == title_l:
                 return client_id
@@ -920,7 +916,7 @@ class MangoWM_IPC:
         return None
 
     # -------------------------------------------------------------------------
-    # Dispatch actions
+    # Basic dispatch actions
     # -------------------------------------------------------------------------
 
     @staticmethod
@@ -930,7 +926,7 @@ class MangoWM_IPC:
 
         variants: List[List[str]] = [
             [f"view,{ws},0"],
-            ["view", str(ws), "0"],
+            [f"view,{ws}"],
         ]
         return MangoWM_IPC._dispatch_variants(variants, f"view workspace {ws}")
 
@@ -941,28 +937,33 @@ class MangoWM_IPC:
             return False
 
         variants: List[List[str]] = [
+            # Legacy form used by older script revisions.
             [f"focus,{client_id}"],
-            ["focus", client_id],
+            # Help-compatible forms: `dispatch focus client,<id>`
+            ["focus", f"client,{client_id}"],
+            [f"client,{client_id}", "focus"],
         ]
         return MangoWM_IPC._dispatch_variants(variants, f"focus client {client_id}")
 
     @staticmethod
     def tag_client_to_workspace(client_id: str, ws: int) -> bool:
-        """Tag a client into a workspace without intentionally viewing it."""
+        """
+        Tag a client into a workspace using normal tag command.
+
+        Correct syntax according to `mmsg --help`:
+          dispatch tag,<ws>,0 client,<id>
+        or:
+          dispatch client,<id> tag,<ws>,0
+        """
         client_id = (client_id or "").strip()
         if not client_id or not (1 <= ws <= NUM_WORKSPACES):
             return False
 
         variants: List[List[str]] = [
-            # Existing convention.
             [f"tag,{ws},0", f"client,{client_id}"],
-            # Single-argument variant.
-            [f"tag,{ws},0,client,{client_id}"],
-            # Space-separated variant.
-            ["tag", str(ws), "0", "client", client_id],
-            # Some WM-like IPCs use movetoworkspace.
-            [f"movetoworkspace,{ws},0", f"client,{client_id}"],
-            ["movetoworkspace", str(ws), "0", "client", client_id],
+            [f"client,{client_id}", f"tag,{ws},0"],
+            [f"tag,{ws}", f"client,{client_id}"],
+            [f"client,{client_id}", f"tag,{ws}"],
         ]
 
         return MangoWM_IPC._dispatch_variants(
@@ -970,107 +971,365 @@ class MangoWM_IPC:
             f"tag client {client_id} -> workspace {ws}",
         )
 
+    # -------------------------------------------------------------------------
+    # Silent move support
+    # -------------------------------------------------------------------------
+
     @staticmethod
-    def move_client_to_workspace(
+    def _custom_silent_move_variants(client_id: str, ws: int) -> List[List[str]]:
+        """
+        Allow user to define exact silent-move syntax.
+
+        Example:
+          GRID_OVERVIEW_SILENT_MOVE="tag_silent,{ws},0 client,{client_id}"
+        """
+        template = os.environ.get(SILENT_MOVE_ENV_VAR, "").strip()
+        if not template:
+            return []
+
+        try:
+            expanded = template.format(ws=ws, client_id=client_id)
+        except Exception as exc:
+            logger.debug("Cannot expand %s template: %s", SILENT_MOVE_ENV_VAR, exc)
+            return []
+
+        args = expanded.split()
+        if not args:
+            return []
+
+        return [args]
+
+    @staticmethod
+    def _silent_tag_variants(client_id: str, ws: int) -> List[List[str]]:
+        """
+        Build silent-tag variants.
+
+        Built-in variants assume MangoWM may provide `tag_silent`.
+        If your build uses another function name, use GRID_OVERVIEW_SILENT_MOVE.
+        """
+        client_id = (client_id or "").strip()
+        if not client_id or not (1 <= ws <= NUM_WORKSPACES):
+            return []
+
+        variants = MangoWM_IPC._custom_silent_move_variants(client_id, ws)
+
+        variants.extend(
+            [
+                [f"tag_silent,{ws},0", f"client,{client_id}"],
+                [f"client,{client_id}", f"tag_silent,{ws},0"],
+                [f"tag_silent,{ws}", f"client,{client_id}"],
+                [f"client,{client_id}", f"tag_silent,{ws}"],
+            ]
+        )
+
+        return variants
+
+    @staticmethod
+    def _verify_client_on_ws(client_id: str, ws: int) -> bool:
+        """Verify that a client is present on a workspace."""
+        try:
+            state = MangoWM_IPC.get_overview_state(exclude_own=False)
+        except Exception as exc:
+            logger.error("Cannot verify client workspace presence: %s", exc)
+            return False
+
+        return any(c.id == client_id for c in state.clients_by_ws.get(ws, []))
+
+    @staticmethod
+    def tag_client_silent(client_id: str, ws: int, verify: bool = False) -> bool:
+        """
+        Try silent tag command.
+
+        When verify=True, only return True if the client is actually seen on
+        target workspace after dispatch.
+        """
+        client_id = (client_id or "").strip()
+        if not client_id or not (1 <= ws <= NUM_WORKSPACES):
+            return False
+
+        variants = MangoWM_IPC._silent_tag_variants(client_id, ws)
+
+        for args in variants:
+            if not MangoWM_IPC._dispatch(args, log_errors=False):
+                continue
+
+            if not verify:
+                return True
+
+            time.sleep(MOVE_VERIFY_SLEEP_SECONDS)
+            if MangoWM_IPC._verify_client_on_ws(client_id, ws):
+                return True
+
+        return False
+
+    @staticmethod
+    def tag_client_silent_or_normal(client_id: str, ws: int) -> bool:
+        """Try silent tag first, then fallback to normal tag."""
+        if MangoWM_IPC.tag_client_silent(client_id, ws, verify=True):
+            return True
+        return MangoWM_IPC.tag_client_to_workspace(client_id, ws)
+
+    @staticmethod
+    def _move_client_silent_with_verify(
         client_id: str,
         target_ws: int,
         source_ws: int,
     ) -> bool:
         """
-        Move a client to target workspace.
+        Try silent move variants and verify expected tag state.
+        """
+        variants = MangoWM_IPC._silent_tag_variants(client_id, target_ws)
+
+        for args in variants:
+            if not MangoWM_IPC._dispatch(args, log_errors=False):
+                continue
+
+            if MangoWM_IPC._verify_move_state(client_id, source_ws, target_ws):
+                return True
+
+            time.sleep(MOVE_VERIFY_SLEEP_SECONDS)
+
+            if MangoWM_IPC._verify_move_state(client_id, source_ws, target_ws):
+                return True
+
+        return False
+
+    @staticmethod
+    def _verify_move_state(client_id: str, source_ws: int, target_ws: int) -> bool:
+        """
+        Verify that the client is present on target workspace.
+
+        If source_ws is known and different from target_ws, also verify that
+        the client is no longer present on source workspace.
+        """
+        try:
+            state = MangoWM_IPC.get_overview_state(exclude_own=False)
+        except Exception as exc:
+            logger.error("Cannot verify move state: %s", exc)
+            return False
+
+        on_target = any(
+            c.id == client_id for c in state.clients_by_ws.get(target_ws, [])
+        )
+        if not on_target:
+            return False
+
+        if 1 <= source_ws <= NUM_WORKSPACES and source_ws != target_ws:
+            on_source = any(
+                c.id == client_id for c in state.clients_by_ws.get(source_ws, [])
+            )
+            if on_source:
+                return False
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # Anti-flicker move implementation
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _choose_anchor_focus_from_state(
+        state: OverviewState,
+        prev_focus: Optional[str],
+        moved_id: str,
+        source_ws: int,
+        own_client_id: Optional[str],
+    ) -> Optional[str]:
+        """
+        Choose a focus anchor on the current workspace.
+
+        The anchor is used to keep focus on the current workspace while the
+        moved client is tagged away.
 
         Important:
-          - This does not intentionally call `view` on target_ws.
-          - If MangoWM still changes workspace/focus as a side effect, the
-            previous workspace/focus is restored.
+          - The overview itself may be used as a last-resort anchor.
+          - The overview is never the moved client.
+        """
+        prev_ws = state.current_ws
+
+        # If another client is already focused, keep it.
+        if prev_focus and prev_focus != moved_id:
+            return prev_focus
+
+        # If the moved client is focused, or it belongs to the current
+        # workspace, try to choose another real client first.
+        if prev_focus == moved_id or (
+            1 <= source_ws <= NUM_WORKSPACES and source_ws == prev_ws
+        ):
+            for client in state.clients_by_ws.get(prev_ws, []):
+                if client.id == moved_id:
+                    continue
+                if own_client_id is not None and client.id == own_client_id:
+                    continue
+                return client.id
+
+            # Last resort: focus the overview itself to keep focus on current
+            # workspace and avoid focus-follows-move behavior.
+            if own_client_id and own_client_id != moved_id:
+                return own_client_id
+
+        return None
+
+    @staticmethod
+    def _find_first_client_id_on_ws(
+        ws: int,
+        exclude_client_id: str,
+        exclude_own_client_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Find first client on workspace, excluding given clients."""
+        if not (1 <= ws <= NUM_WORKSPACES):
+            return None
+
+        try:
+            state = MangoWM_IPC.get_overview_state(
+                exclude_client_id=exclude_own_client_id,
+                exclude_own=True,
+            )
+        except Exception as exc:
+            logger.error("Cannot query state for fallback focus: %s", exc)
+            return None
+
+        for client in state.clients_by_ws.get(ws, []):
+            if client.id == exclude_client_id:
+                continue
+            if exclude_own_client_id is not None and client.id == exclude_own_client_id:
+                continue
+            return client.id
+
+        return None
+
+    @staticmethod
+    def _late_stay_check(
+        prev_ws: int,
+        desired_focus: Optional[str],
+        moved_id: str,
+        own_client_id: Optional[str],
+    ) -> None:
+        """
+        Late safety check.
+
+        This is intentionally short. It only dispatches corrections when the
+        WM state is actually wrong.
+        """
+        time.sleep(MOVE_LATE_CHECK_SLEEP_SECONDS)
+
+        try:
+            current_ws = MangoWM_IPC.get_current_ws()
+            current_focus = MangoWM_IPC.get_focused_client_id()
+
+            if current_ws != prev_ws:
+                MangoWM_IPC.dispatch_view(prev_ws)
+
+            if desired_focus:
+                if current_focus != desired_focus:
+                    MangoWM_IPC.dispatch_focus(desired_focus)
+            elif current_focus == moved_id:
+                fallback_focus = MangoWM_IPC._find_first_client_id_on_ws(
+                    prev_ws,
+                    moved_id,
+                    own_client_id,
+                )
+                if not fallback_focus and own_client_id and own_client_id != moved_id:
+                    fallback_focus = own_client_id
+
+                if fallback_focus:
+                    MangoWM_IPC.dispatch_focus(fallback_focus)
+
+        except Exception as exc:
+            logger.error("Late workspace/focus safety check failed: %s", exc)
+
+    @staticmethod
+    def move_client_to_workspace(
+        client_id: str,
+        target_ws: int,
+        source_ws: int,
+        own_client_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Move a client to target workspace while trying to keep the user on the
+        current workspace.
         """
         client_id = (client_id or "").strip()
         if not client_id or not (1 <= target_ws <= NUM_WORKSPACES):
             return False
 
-        prev_ws = MangoWM_IPC.get_current_ws()
-        prev_focus = MangoWM_IPC.get_focused_client_id()
+        if own_client_id is None:
+            try:
+                own_client_id = MangoWM_IPC.find_own_client_id(
+                    os.getpid(),
+                    WINDOW_TITLE,
+                    WINDOW_ROLE,
+                    APP_NAME,
+                )
+            except Exception as exc:
+                logger.error("Cannot find own client id before move: %s", exc)
+                own_client_id = None
 
-        ok = MangoWM_IPC.tag_client_to_workspace(client_id, target_ws)
-        if not ok:
+        try:
+            state = MangoWM_IPC.get_overview_state(
+                exclude_client_id=own_client_id,
+                exclude_own=True,
+            )
+            prev_focus = MangoWM_IPC.get_focused_client_id()
+        except Exception as exc:
+            logger.error("Cannot prepare move context: %s", exc)
             return False
 
-        MangoWM_IPC._restore_focus_after_move(
-            prev_ws=prev_ws,
+        prev_ws = state.current_ws
+
+        # Preferred path: silent move.
+        if MangoWM_IPC._move_client_silent_with_verify(
+            client_id=client_id,
+            target_ws=target_ws,
+            source_ws=source_ws,
+        ):
+            desired_focus: Optional[str] = None
+            if prev_focus and prev_focus != client_id:
+                desired_focus = prev_focus
+
+            MangoWM_IPC._late_stay_check(
+                prev_ws=prev_ws,
+                desired_focus=desired_focus,
+                moved_id=client_id,
+                own_client_id=own_client_id,
+            )
+            return True
+
+        # Fallback path: anchor focus + normal tag + immediate restore.
+        anchor_focus = MangoWM_IPC._choose_anchor_focus_from_state(
+            state=state,
             prev_focus=prev_focus,
             moved_id=client_id,
+            source_ws=source_ws,
+            own_client_id=own_client_id,
         )
+
+        if anchor_focus and anchor_focus != prev_focus:
+            MangoWM_IPC.dispatch_focus(anchor_focus)
+
+        moved = MangoWM_IPC.tag_client_to_workspace(client_id, target_ws)
+        if not moved:
+            return False
+
+        MangoWM_IPC.dispatch_view(prev_ws)
+
+        desired_focus = None
+        if anchor_focus:
+            desired_focus = anchor_focus
+        elif prev_focus and prev_focus != client_id:
+            desired_focus = prev_focus
+
+        if desired_focus:
+            MangoWM_IPC.dispatch_focus(desired_focus)
+
+        MangoWM_IPC._late_stay_check(
+            prev_ws=prev_ws,
+            desired_focus=desired_focus,
+            moved_id=client_id,
+            own_client_id=own_client_id,
+        )
+
         return True
-
-    @staticmethod
-    def _restore_focus_after_move(
-        prev_ws: int,
-        prev_focus: Optional[str],
-        moved_id: str,
-    ) -> None:
-        """
-        Defensive restore after drag & drop.
-
-        Ensures:
-          - user remains on the old workspace,
-          - focus does not follow the moved app.
-        """
-        try:
-            # Give the WM a short moment to process the dispatch.
-            time.sleep(0.05)
-
-            new_ws = MangoWM_IPC.get_current_ws()
-            new_focus = MangoWM_IPC.get_focused_client_id()
-
-            if new_ws != prev_ws:
-                MangoWM_IPC.dispatch_view(prev_ws)
-                time.sleep(0.02)
-                new_focus = MangoWM_IPC.get_focused_client_id()
-
-            # If previous focus was not the moved app, restore it.
-            if prev_focus and prev_focus != moved_id and new_focus != prev_focus:
-                MangoWM_IPC.dispatch_focus(prev_focus)
-                return
-
-            # If the WM focused the moved app, pull focus back to old workspace.
-            if new_focus == moved_id and prev_focus != moved_id:
-                if prev_focus:
-                    MangoWM_IPC.dispatch_focus(prev_focus)
-                else:
-                    MangoWM_IPC._focus_first_client_on_ws(
-                        prev_ws,
-                        exclude_client_id=moved_id,
-                    )
-                return
-
-            # If the moved app was already focused, do not keep focus on it.
-            if prev_focus == moved_id and new_focus == moved_id:
-                MangoWM_IPC._focus_first_client_on_ws(
-                    prev_ws,
-                    exclude_client_id=moved_id,
-                )
-
-        except Exception as exc:
-            logger.error("Cannot restore workspace/focus after drag: %s", exc)
-
-    @staticmethod
-    def _focus_first_client_on_ws(ws: int, exclude_client_id: str) -> bool:
-        """Focus first client on workspace, excluding the moved client."""
-        if not (1 <= ws <= NUM_WORKSPACES):
-            return False
-
-        try:
-            state = MangoWM_IPC.get_overview_state()
-        except Exception as exc:
-            logger.error("Cannot query state for fallback focus: %s", exc)
-            return False
-
-        for client in state.clients_by_ws.get(ws, []):
-            if client.id == exclude_client_id:
-                continue
-            return MangoWM_IPC.dispatch_focus(client.id)
-
-        return False
 
 
 # =============================================================================
@@ -1110,6 +1369,105 @@ class IPCWorker(threading.Thread):
                 logger.error("IPC worker task failed: %s", exc)
             finally:
                 self._queue.task_done()
+
+
+# =============================================================================
+# mmsg watch worker
+# =============================================================================
+
+
+class MmsgWatchWorker(threading.Thread):
+    """
+    Watch a persistent mmsg stream and request UI sync on events.
+
+    This uses `mmsg watch ...` as documented by `mmsg --help`.
+    The actual event payload is not strictly parsed; any line is treated as
+    a change notification, then the GUI re-queries consistent state.
+    """
+
+    def __init__(self, watch_args: List[str], on_event: Callable[[], None]) -> None:
+        name = "mmsg-watch"
+        if len(watch_args) >= 2:
+            name = f"mmsg-watch-{watch_args[1]}"
+
+        super().__init__(daemon=True, name=name)
+
+        self._args = ["mmsg"] + watch_args
+        self._on_event = on_event
+        self._stop_event = threading.Event()
+        self._proc: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            proc: Optional[subprocess.Popen] = None
+
+            try:
+                with self._lock:
+                    self._proc = subprocess.Popen(
+                        self._args,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        bufsize=1,
+                    )
+                    proc = self._proc
+
+                if proc is None or proc.stdout is None:
+                    raise RuntimeError("Cannot open watch stream")
+
+                for line in proc.stdout:
+                    if self._stop_event.is_set():
+                        break
+
+                    if line.strip():
+                        try:
+                            self._on_event()
+                        except Exception as exc:
+                            logger.debug("Watch event callback failed: %s", exc)
+
+            except FileNotFoundError:
+                log_throttled(
+                    logging.ERROR,
+                    "mmsg-missing-watch",
+                    "Cannot find `mmsg` for watch stream %s.",
+                    " ".join(self._args),
+                )
+            except Exception as exc:
+                logger.debug("Watch stream %s error: %s", " ".join(self._args), exc)
+            finally:
+                with self._lock:
+                    current = self._proc
+                    self._proc = None
+
+                if current is not None:
+                    try:
+                        current.terminate()
+                    except Exception:
+                        pass
+
+                    try:
+                        current.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            current.kill()
+                        except Exception:
+                            pass
+
+            if not self._stop_event.is_set():
+                time.sleep(WATCH_RESTART_DELAY_SECONDS)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+        with self._lock:
+            proc = self._proc
+
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -1513,6 +1871,7 @@ class AppWidget(Gtk.EventBox):
         if self.main_window.should_suppress_click():
             return False
 
+        # Click app: focus app, but DO NOT exit.
         self.main_window.activate_app(self.client)
         return True
 
@@ -1723,6 +2082,10 @@ class WorkspaceWidget(Gtk.EventBox):
         if is_instance_or_ancestor(event_widget, Gtk.Scrollbar):
             return False
 
+        # Click workspace:
+        #   - switch workspace,
+        #   - move overview there,
+        #   - DO NOT exit.
         self.main_window.activate_workspace(self.ws_id)
         return True
 
@@ -1822,8 +2185,6 @@ class GridOverview(Gtk.Window):
 
         # State flags.
         self._closed = False
-        self._closing = False
-        self._action_token = 0
 
         self._drag_active_count = 0
         self._drag_failsafe_source = 0
@@ -1839,6 +2200,8 @@ class GridOverview(Gtk.Window):
         self._ipc_watch_source = 0
 
         self._ipc_available = True
+        self._last_state: Optional[OverviewState] = None
+        self._own_client_id: Optional[str] = None
 
         self._last_hint = ""
         self._last_cell_size: Tuple[int, int] = (0, 0)
@@ -1847,12 +2210,15 @@ class GridOverview(Gtk.Window):
         self._ipc_worker = IPCWorker()
         self._ipc_worker.start()
 
+        self._watch_workers: List[MmsgWatchWorker] = []
+
         self.workspaces: Dict[int, WorkspaceWidget] = {}
 
         self._setup_window_backend()
         self._setup_css()
         self._setup_ui()
         self._setup_instance_socket_watch()
+        self._setup_watch_workers()
 
         self.connect("destroy", self._on_destroy)
         self.connect("key-press-event", self.on_key_press)
@@ -1874,9 +2240,6 @@ class GridOverview(Gtk.Window):
     def _setup_window_backend(self) -> None:
         """
         Configure this window as a centered dialog-like overview.
-
-        This intentionally avoids fullscreen/layer-shell overlay behavior
-        because some compositors/WMs snap fullscreen layer surfaces oddly.
         """
         self.set_title(WINDOW_TITLE)
 
@@ -1949,6 +2312,9 @@ class GridOverview(Gtk.Window):
             | Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.BUTTON_RELEASE_MASK
         )
+
+        # Background click intentionally does nothing.
+        # ESC is the only exit trigger.
         self.bg_eventbox.connect("button-press-event", self.on_bg_clicked)
 
         self.add(self.bg_eventbox)
@@ -1973,7 +2339,7 @@ class GridOverview(Gtk.Window):
         self.hint_label = Gtk.Label()
         self.hint_label.get_style_context().add_class("hint-label")
         self.hint_label.set_justify(Gtk.Justification.CENTER)
-        self.hint_label.set_max_width_chars(90)
+        self.hint_label.set_max_width_chars(100)
 
         self.outer_box.pack_start(self.hint_label, False, False, 0)
 
@@ -1998,6 +2364,18 @@ class GridOverview(Gtk.Window):
             )
         except Exception as exc:
             logger.error("Cannot watch single-instance socket: %s", exc)
+
+    def _setup_watch_workers(self) -> None:
+        watch_commands: List[List[str]] = [
+            ["watch", "all-clients"],
+            ["watch", "focusing-client"],
+            ["watch", "all-tags"],
+        ]
+
+        for cmd in watch_commands:
+            worker = MmsgWatchWorker(cmd, self._notify_watch_event)
+            worker.start()
+            self._watch_workers.append(worker)
 
     # -------------------------------------------------------------------------
     # Window placement
@@ -2042,8 +2420,6 @@ class GridOverview(Gtk.Window):
             return
 
         self._closed = True
-        self._closing = True
-        self._action_token += 1
 
         for source_attr in (
             "_sync_source",
@@ -2058,6 +2434,12 @@ class GridOverview(Gtk.Window):
                 except Exception as exc:
                     logger.debug("Cannot remove GLib source %s: %s", source_attr, exc)
                 setattr(self, source_attr, 0)
+
+        for worker in self._watch_workers:
+            try:
+                worker.stop()
+            except Exception as exc:
+                logger.debug("Cannot stop watch worker: %s", exc)
 
         try:
             self._ipc_worker.stop()
@@ -2075,6 +2457,27 @@ class GridOverview(Gtk.Window):
             logger.debug("Cannot hide window before quit: %s", exc)
 
         Gtk.main_quit()
+
+    # -------------------------------------------------------------------------
+    # Watch events
+    # -------------------------------------------------------------------------
+
+    def _notify_watch_event(self) -> None:
+        """Called from watch worker threads."""
+        if self._closed:
+            return
+
+        try:
+            GLib.idle_add(self._on_watch_event)
+        except Exception as exc:
+            logger.debug("Cannot schedule watch event sync: %s", exc)
+
+    def _on_watch_event(self) -> bool:
+        if self._closed:
+            return False
+
+        self.request_sync(delay_ms=WATCH_EVENT_SYNC_DEBOUNCE_MS)
+        return False
 
     # -------------------------------------------------------------------------
     # Single-instance IPC
@@ -2127,16 +2530,11 @@ class GridOverview(Gtk.Window):
         """
         Called when another instance asks this instance to show itself.
 
-        It cancels any pending activation/close, presents the dialog, and asks
-        MangoWM to move/focus this window on the current workspace.
+        It presents the dialog and asks MangoWM to move/focus this window on
+        the current workspace.
         """
         if self._closed:
             return False
-
-        # Cancel pending activation/close actions.
-        self._action_token += 1
-        self._closing = False
-        self.set_sensitive(True)
 
         self.show()
         self.present()
@@ -2152,20 +2550,7 @@ class GridOverview(Gtk.Window):
 
             try:
                 current_ws = MangoWM_IPC.get_current_ws()
-                client_id = MangoWM_IPC.find_own_client_id(
-                    os.getpid(),
-                    WINDOW_TITLE,
-                    WINDOW_ROLE,
-                    APP_NAME,
-                )
-
-                if client_id:
-                    MangoWM_IPC.tag_client_to_workspace(client_id, current_ws)
-                    MangoWM_IPC.dispatch_focus(client_id)
-                else:
-                    logger.warning(
-                        "Cannot find own MangoWM client id; relying on present()."
-                    )
+                self._move_overview_to_ws_blocking(current_ws, focus_self=True)
             except Exception as exc:
                 logger.error("Failed to bring overview to current workspace: %s", exc)
             finally:
@@ -2182,6 +2567,68 @@ class GridOverview(Gtk.Window):
         self.present()
         self.request_sync(immediate=True)
         return False
+
+    # -------------------------------------------------------------------------
+    # Own window movement
+    # -------------------------------------------------------------------------
+
+    def _set_own_client_id(self, own_id: str) -> bool:
+        if self._closed:
+            return False
+
+        if own_id and self._own_client_id != own_id:
+            self._own_client_id = own_id
+
+        return False
+
+    def _get_own_client_id_blocking(self) -> Optional[str]:
+        """
+        Get own client id, discovering it if needed.
+
+        This runs in worker thread.
+        """
+        if self._own_client_id:
+            return self._own_client_id
+
+        try:
+            own_id = MangoWM_IPC.find_own_client_id(
+                os.getpid(),
+                WINDOW_TITLE,
+                WINDOW_ROLE,
+                APP_NAME,
+            )
+        except Exception as exc:
+            logger.error("Cannot find own client id: %s", exc)
+            own_id = None
+
+        if own_id:
+            GLib.idle_add(self._set_own_client_id, own_id)
+
+        return own_id
+
+    def _move_overview_to_ws_blocking(self, ws: int, focus_self: bool) -> bool:
+        """
+        Move overview window to a workspace and optionally focus it.
+
+        This runs in worker thread.
+        """
+        if self._closed:
+            return False
+
+        if not (1 <= ws <= NUM_WORKSPACES):
+            return False
+
+        own_id = self._get_own_client_id_blocking()
+
+        if own_id:
+            MangoWM_IPC.tag_client_silent_or_normal(own_id, ws)
+
+        view_ok = MangoWM_IPC.dispatch_view(ws)
+
+        if focus_self and own_id:
+            MangoWM_IPC.dispatch_focus(own_id)
+
+        return view_ok
 
     # -------------------------------------------------------------------------
     # Responsive layout
@@ -2300,19 +2747,39 @@ class GridOverview(Gtk.Window):
         if self._closed:
             return
 
+        own_id = self._own_client_id
+
+        if own_id is None:
+            try:
+                own_id = MangoWM_IPC.find_own_client_id(
+                    os.getpid(),
+                    WINDOW_TITLE,
+                    WINDOW_ROLE,
+                    APP_NAME,
+                )
+            except Exception as exc:
+                logger.error("Cannot find own client id during sync: %s", exc)
+                own_id = None
+
         state: Optional[OverviewState] = None
 
         try:
-            state = MangoWM_IPC.get_overview_state()
+            state = MangoWM_IPC.get_overview_state(
+                exclude_client_id=own_id,
+                exclude_own=True,
+            )
         except Exception as exc:
             logger.error("Cannot fetch overview state: %s", exc)
         finally:
             if not self._closed:
-                GLib.idle_add(self._apply_state, state)
+                GLib.idle_add(self._apply_state, state, own_id)
 
-    def _apply_state(self, state: Optional[OverviewState]) -> bool:
+    def _apply_state(self, state: Optional[OverviewState], own_id: Optional[str]) -> bool:
         if self._closed:
             return False
+
+        if own_id and self._own_client_id != own_id:
+            self._own_client_id = own_id
 
         self._sync_in_flight = False
 
@@ -2332,6 +2799,7 @@ class GridOverview(Gtk.Window):
         if self._closed:
             return
 
+        self._last_state = state
         self._ipc_available = state.ipc_available
 
         for ws_id in range(1, NUM_WORKSPACES + 1):
@@ -2351,7 +2819,8 @@ class GridOverview(Gtk.Window):
         if ipc_available:
             text = (
                 "Drag app to move • Click app to focus • "
-                "Click workspace to switch • ESC to close"
+                "Click workspace to switch and move overview there • "
+                "ESC to close"
             )
         else:
             text = (
@@ -2453,17 +2922,12 @@ class GridOverview(Gtk.Window):
     # -------------------------------------------------------------------------
 
     def activate_app(self, client: ClientState) -> None:
-        if self._closed or self._closing:
+        """Click app: switch workspace + focus app, but do not exit."""
+        if self._closed:
             return
 
         if self.should_suppress_click():
             return
-
-        self._action_token += 1
-        token = self._action_token
-
-        self._closing = True
-        self.set_sensitive(False)
 
         def task() -> None:
             if self._closed:
@@ -2478,12 +2942,19 @@ class GridOverview(Gtk.Window):
                 logger.error("Error while activating app %s: %s", client.id, exc)
             finally:
                 if not self._closed:
-                    GLib.idle_add(self._on_activation_done, token, success)
+                    GLib.idle_add(self._on_user_action_done, success)
 
         self._ipc_worker.submit(task)
 
     def activate_workspace(self, ws_id: int) -> None:
-        if self._closed or self._closing:
+        """
+        Click workspace:
+          - move overview to that workspace,
+          - switch view,
+          - focus overview,
+          - do not exit.
+        """
+        if self._closed:
             return
 
         if self.should_suppress_click():
@@ -2492,44 +2963,31 @@ class GridOverview(Gtk.Window):
         if not (1 <= ws_id <= NUM_WORKSPACES):
             return
 
-        self._action_token += 1
-        token = self._action_token
-
-        self._closing = True
-        self.set_sensitive(False)
-
         def task() -> None:
             if self._closed:
                 return
 
             success = False
             try:
-                success = MangoWM_IPC.dispatch_view(ws_id)
+                success = self._move_overview_to_ws_blocking(ws_id, focus_self=True)
             except Exception as exc:
                 logger.error("Error while activating workspace %s: %s", ws_id, exc)
             finally:
                 if not self._closed:
-                    GLib.idle_add(self._on_activation_done, token, success)
+                    GLib.idle_add(self._on_user_action_done, success)
 
         self._ipc_worker.submit(task)
 
-    def _on_activation_done(self, token: int, success: bool) -> bool:
+    def _on_user_action_done(self, success: bool) -> bool:
         if self._closed:
             return False
 
-        # Ignore stale activation results canceled by bring-to-current or close.
-        if token != self._action_token:
-            return False
-
-        if success:
-            self.close_app()
-            return False
-
-        # If the command failed, re-enable UI so the user can retry.
-        self._closing = False
-        self.set_sensitive(True)
-        self._ipc_available = False
-        self._update_hint(False)
+        if not success:
+            self._ipc_available = False
+            self._update_hint(False)
+        else:
+            # Watch streams will often update state already; this is a fallback.
+            self.request_sync(delay_ms=SYNC_AFTER_DROP_MS)
 
         return False
 
@@ -2548,6 +3006,11 @@ class GridOverview(Gtk.Window):
             self.request_sync(delay_ms=SYNC_AFTER_DROP_MS)
             return
 
+        # Never allow moving the overview itself via drag & drop.
+        if self._own_client_id and client_id == self._own_client_id:
+            logger.warning("Refusing to move the overview window itself.")
+            return
+
         self._pending_mutations += 1
 
         def task() -> None:
@@ -2559,6 +3022,7 @@ class GridOverview(Gtk.Window):
                     client_id=client_id,
                     target_ws=target_ws,
                     source_ws=source_ws,
+                    own_client_id=self._own_client_id,
                 )
             except Exception as exc:
                 logger.error("Error while moving client %s: %s", client_id, exc)
@@ -2587,20 +3051,7 @@ class GridOverview(Gtk.Window):
         _widget: Gtk.Widget,
         event: Gdk.EventButton,
     ) -> bool:
-        if self._closed or self._closing:
-            return True
-
-        if event.button != 1:
-            return False
-
-        if self.should_suppress_click():
-            return False
-
-        # Close only when clicking the empty dialog background.
-        if event.window == self.bg_eventbox.get_window():
-            self.close_app()
-            return True
-
+        # Intentionally no close. ESC is the only exit trigger.
         return False
 
     def on_key_press(

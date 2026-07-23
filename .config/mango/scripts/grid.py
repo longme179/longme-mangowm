@@ -2,6 +2,7 @@
 #
 # MangoWM Grid Overview Workspace
 # Production-ready GTK3/PyGObject implementation.
+# UX-polished edition.
 #
 # Runtime dependencies:
 #   - Python 3.9+
@@ -16,8 +17,13 @@
 #   - Click a workspace tile: switch to that workspace and exit.
 #   - Drag & drop apps between workspaces: move app only, DO NOT exit.
 #   - Click an app:
-#       * By default: focus app but DO NOT exit.
-#       * Set EXIT_ON_APP_CLICK = True if you want click-app to exit too.
+#       * By default: focus app and close overview if EXIT_ON_APP_CLICK=True.
+#       * Set EXIT_ON_APP_CLICK = False if you want click-app to keep overview open.
+#
+# UX keys:
+#   - c: Compact density
+#   - l: Large density
+#   - p: Toggle low-power mode
 #
 # Important mmsg syntax notes from MangoWM docs:
 #   dispatch <func>[,arg...] [client,<id>]
@@ -41,6 +47,7 @@ import os
 import queue
 import signal
 import socket
+import string
 import subprocess
 import tempfile
 import threading
@@ -70,8 +77,15 @@ GRID_ROWS = (NUM_WORKSPACES + GRID_COLUMNS - 1) // GRID_COLUMNS
 POLL_INTERVAL_MS = 2500
 POLL_INTERVAL_IPC_DOWN_MS = 5000
 
+LOW_POWER_POLL_INTERVAL_MS = 4000
+LOW_POWER_POLL_INTERVAL_IPC_DOWN_MS = 8000
+
 SYNC_DEBOUNCE_MS = 160
+SYNC_DEBOUNCE_LOW_POWER_MS = 240
+
 WATCH_EVENT_SYNC_DEBOUNCE_MS = 120
+WATCH_EVENT_SYNC_DEBOUNCE_LOW_POWER_MS = 180
+
 SYNC_AFTER_DROP_MS = 140
 SYNC_AFTER_DRAG_END_MS = 220
 
@@ -80,6 +94,7 @@ DRAG_FAILSAFE_SECONDS = 10
 
 IPC_COMMAND_TIMEOUT = 0.90
 IPC_DISPATCH_TIMEOUT = 0.60
+IPC_CLIENT_QUERY_TIMEOUT = 0.50
 
 MOVE_VERIFY_SLEEP_SECONDS = 0.015
 MOVE_LATE_CHECK_SLEEP_SECONDS = 0.020
@@ -91,8 +106,14 @@ APP_NAME = "mangowm-grid-overview"
 WINDOW_TITLE = "MangoWM Grid Overview"
 WINDOW_ROLE = "mangowm-grid-overview"
 
+APP_NAME_LOWER = APP_NAME.lower()
+WINDOW_TITLE_LOWER = WINDOW_TITLE.lower()
+WINDOW_ROLE_LOWER = WINDOW_ROLE.lower()
+OWN_PID = os.getpid()
+
 LOCK_FILE_NAME = "mangowm-grid-overview.lock"
 SOCKET_FILE_NAME = "mangowm-grid-overview.sock"
+UI_SETTINGS_FILE_NAME = "mangowm-grid-overview-ui.json"
 
 IPC_MESSAGE_SHOW = "show"
 IPC_MESSAGE_QUIT = "quit"
@@ -108,14 +129,22 @@ CLIENT_TITLE_KEYS = ["title", "name", "window_title"]
 CLIENT_APP_KEYS = ["appid", "app_id", "class", "wm_class", "instance", "command"]
 CLIENT_ROLE_KEYS = ["role", "window_role", "instance", "startup_id"]
 
+FADE_IN_STEP_MS = 16
+FADE_IN_STEPS = 8
+
 DND_TARGETS = [
     Gtk.TargetEntry.new("text/plain", 0, 0),
     Gtk.TargetEntry.new("STRING", 0, 0),
 ]
 
-CSS = b"""
+
+# =============================================================================
+# CSS template
+# =============================================================================
+
+CSS_TEMPLATE = string.Template("""
 window {
-    background-color: rgba(25, 23, 36, 0.92);
+    background-color: rgba(25, 23, 36, $window_alpha);
 }
 
 .bg-overlay {
@@ -135,28 +164,32 @@ window {
 .ws-btn {
     background-color: rgba(38, 35, 58, 0.62);
     border: 2px solid #6e6a86;
-    border-radius: 16px;
-    padding: 12px;
+    border-radius: $ws_radius;
+    padding: $ws_padding;
+    transition: $transition_ws;
 }
 
 .ws-btn:hover {
     border-color: #ebbcba;
     background-color: rgba(235, 188, 186, 0.14);
+    box-shadow: $shadow_hover;
 }
 
 .ws-active {
     border-color: #c4a7e7;
     background-color: rgba(196, 167, 231, 0.16);
+    box-shadow: $shadow_active;
 }
 
 .ws-drop {
-    border: 3px dashed #eb6f92;
-    background-color: rgba(235, 110, 146, 0.28);
+    border: 2px dashed #eb6f92;
+    background-color: rgba(235, 110, 146, 0.32);
+    box-shadow: $shadow_drop;
 }
 
 .ws-label {
     color: #ebbcba;
-    font-size: 15px;
+    font-size: $title_font;
     font-weight: bold;
     margin-bottom: 8px;
 }
@@ -167,13 +200,16 @@ window {
 
 .app-box {
     background-color: rgba(110, 106, 134, 0.38);
-    border-radius: 8px;
-    padding: 8px;
-    margin-bottom: 6px;
+    border: 1px solid transparent;
+    border-radius: $app_radius;
+    padding: $app_padding;
+    margin-bottom: $app_margin;
+    transition: $transition_app;
 }
 
 .app-box:hover {
     background-color: #ebbcba;
+    border-color: rgba(25, 23, 36, 0.25);
 }
 
 .app-box:hover label {
@@ -182,21 +218,22 @@ window {
 
 .app-box-dragging {
     background-color: #eb6f92;
-    opacity: 0.5;
+    opacity: 0.45;
 }
 
 .app-label {
     color: #e0def4;
-    font-size: 13px;
+    font-size: $label_font;
     margin-left: 8px;
+    transition: $transition_label;
 }
 
 .hint-label {
     color: #908caa;
-    font-size: 13px;
+    font-size: $hint_font;
     margin-top: 18px;
 }
-"""
+""")
 
 
 # =============================================================================
@@ -266,7 +303,7 @@ def parse_drag_payload(raw: Optional[str]) -> Tuple[str, int]:
 
 def get_runtime_dir() -> str:
     """
-    Return a per-user runtime directory for lock/socket files.
+    Return a per-user runtime directory for lock/socket/settings files.
 
     Prefer XDG_RUNTIME_DIR. Fall back to a private directory under /tmp.
     """
@@ -282,6 +319,78 @@ def get_runtime_dir() -> str:
     fallback = os.path.join(tempfile.gettempdir(), f"mangowm-grid-overview-{uid}")
     os.makedirs(fallback, mode=0o700, exist_ok=True)
     return fallback
+
+
+def coerce_bool(value: Any) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+# =============================================================================
+# UI settings
+# =============================================================================
+
+
+class UiSettings:
+    """
+    Persistent UI settings.
+
+    density:
+      - "compact"
+      - "large"
+
+    low_power:
+      - True: disable expensive visual effects and reduce background work.
+    """
+
+    def __init__(self) -> None:
+        self.path = os.path.join(get_runtime_dir(), UI_SETTINGS_FILE_NAME)
+        self.density = "large"
+        self.low_power = False
+
+        self._load()
+        self._apply_env_overrides()
+
+    def _load(self) -> None:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.debug("Cannot load UI settings: %s", exc)
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        density = str(data.get("density", "")).strip().lower()
+        if density in ("compact", "large"):
+            self.density = density
+
+        self.low_power = bool(data.get("low_power", False))
+
+    def _apply_env_overrides(self) -> None:
+        density = os.environ.get("GRID_OVERVIEW_DENSITY", "").strip().lower()
+        if density in ("compact", "large"):
+            self.density = density
+
+        low_power = os.environ.get("GRID_OVERVIEW_LOW_POWER")
+        if low_power is not None:
+            self.low_power = coerce_bool(low_power)
+
+    def save(self) -> None:
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "density": self.density,
+                        "low_power": self.low_power,
+                    },
+                    f,
+                    indent=2,
+                )
+        except Exception as exc:
+            logger.debug("Cannot save UI settings: %s", exc)
 
 
 # =============================================================================
@@ -302,6 +411,8 @@ class OverviewState:
     current_ws: int
     clients_by_ws: Dict[int, List[ClientState]]
     ipc_available: bool
+    focused_client_id: Optional[str] = None
+    own_client_id: Optional[str] = None
 
 
 # =============================================================================
@@ -316,6 +427,10 @@ class MangoWM_IPC:
     All commands are intended to be executed from a worker thread, never
     directly from the GTK main thread.
     """
+
+    # Cache successful dispatch variant indexes to avoid retrying invalid
+    # syntaxes repeatedly.
+    _DISPATCH_CACHE: Dict[str, int] = {}
 
     # -------------------------------------------------------------------------
     # Low-level subprocess helpers
@@ -467,10 +582,42 @@ class MangoWM_IPC:
         return True
 
     @staticmethod
-    def _dispatch_variants(variants: List[List[str]], action_name: str) -> bool:
-        """Try multiple dispatch syntax variants and log when all fail."""
-        for args in variants:
+    def _ordered_indexed_variants(
+        cache_key: str,
+        variants: List[List[str]],
+    ) -> List[Tuple[int, List[str]]]:
+        """
+        Return variants ordered so that the last successful variant is tried
+        first.
+        """
+        indices = list(range(len(variants)))
+        cached_idx = MangoWM_IPC._DISPATCH_CACHE.get(cache_key)
+
+        if cached_idx is not None and cached_idx in indices:
+            indices.remove(cached_idx)
+            indices.insert(0, cached_idx)
+
+        return [(idx, variants[idx]) for idx in indices]
+
+    @staticmethod
+    def _dispatch_variants_cached(
+        cache_key: str,
+        variants: List[List[str]],
+        action_name: str,
+    ) -> bool:
+        """Try multiple dispatch syntax variants, caching successful syntax."""
+        if not variants:
+            log_throttled(
+                logging.ERROR,
+                f"dispatch-empty:{action_name}",
+                "No dispatch variants available for `%s`.",
+                action_name,
+            )
+            return False
+
+        for idx, args in MangoWM_IPC._ordered_indexed_variants(cache_key, variants):
             if MangoWM_IPC._dispatch(args, log_errors=False):
+                MangoWM_IPC._DISPATCH_CACHE[cache_key] = idx
                 return True
 
         log_throttled(
@@ -480,14 +627,6 @@ class MangoWM_IPC:
             action_name,
             len(variants),
         )
-        return False
-
-    @staticmethod
-    def _try_dispatch_variants(variants: List[List[str]]) -> bool:
-        """Try multiple dispatch variants without logging all-failure."""
-        for args in variants:
-            if MangoWM_IPC._dispatch(args, log_errors=False):
-                return True
         return False
 
     # -------------------------------------------------------------------------
@@ -690,6 +829,40 @@ class MangoWM_IPC:
         return None
 
     @staticmethod
+    def _parse_focus_info(data: Any) -> Tuple[Optional[str], Optional[int]]:
+        """
+        Parse `get focusing-client` output.
+
+        Returns:
+          (focused_client_id, current_workspace_guess)
+        """
+        if isinstance(data, (list, tuple)) and data:
+            data = data[0]
+
+        if not isinstance(data, dict):
+            return None, None
+
+        client_id = MangoWM_IPC._first_str(data, CLIENT_ID_KEYS)
+
+        tags = MangoWM_IPC.parse_tags(data.get("tags"))
+        ws = tags[0] if tags else None
+
+        nested = data.get("client")
+        if isinstance(nested, dict):
+            if client_id is None:
+                client_id = MangoWM_IPC._first_str(nested, CLIENT_ID_KEYS)
+
+            if ws is None:
+                nested_tags = MangoWM_IPC.parse_tags(nested.get("tags"))
+                if nested_tags:
+                    ws = nested_tags[0]
+
+        if ws is None:
+            ws = MangoWM_IPC._extract_ws_index(data.get("workspace"))
+
+        return client_id, ws
+
+    @staticmethod
     def _is_own_client(item: Dict[str, Any], exclude_client_id: Optional[str]) -> bool:
         """Return True when this client item looks like this overview window."""
         client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
@@ -697,19 +870,19 @@ class MangoWM_IPC:
             return True
 
         pid = MangoWM_IPC._extract_pid(item)
-        if pid is not None and pid == os.getpid():
+        if pid is not None and pid == OWN_PID:
             return True
 
         title = MangoWM_IPC._first_str(item, CLIENT_TITLE_KEYS) or ""
-        if title.strip().lower() == WINDOW_TITLE.lower():
+        if title.strip().lower() == WINDOW_TITLE_LOWER:
             return True
 
         role = MangoWM_IPC._first_str(item, CLIENT_ROLE_KEYS) or ""
-        if WINDOW_ROLE.lower() in role.lower():
+        if WINDOW_ROLE_LOWER in role.lower():
             return True
 
         app = MangoWM_IPC._first_str(item, CLIENT_APP_KEYS) or ""
-        if APP_NAME.lower() in app.lower():
+        if APP_NAME_LOWER in app.lower():
             return True
 
         return False
@@ -719,35 +892,16 @@ class MangoWM_IPC:
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def get_current_ws() -> int:
+    def get_focus_info() -> Tuple[Optional[str], Optional[int]]:
         """
-        Get current workspace.
-
-        Strategy:
-          1. focusing-client.
-          2. all-monitors.
-          3. all-tags.
-          4. fallback to workspace 1 when unknown.
+        Query focusing-client once and extract both focus id and workspace.
         """
         data = MangoWM_IPC._query(["get", "focusing-client"], log_errors=False)
-        if isinstance(data, (list, tuple)) and data:
-            data = data[0]
+        return MangoWM_IPC._parse_focus_info(data)
 
-        if isinstance(data, dict):
-            tags = MangoWM_IPC.parse_tags(data.get("tags"))
-            if tags:
-                return tags[0]
-
-            nested = data.get("client")
-            if isinstance(nested, dict):
-                tags = MangoWM_IPC.parse_tags(nested.get("tags"))
-                if tags:
-                    return tags[0]
-
-            ws = MangoWM_IPC._extract_ws_index(data.get("workspace"))
-            if ws:
-                return ws
-
+    @staticmethod
+    def _get_current_ws_fallback() -> int:
+        """Fallback current workspace queries when focusing-client is absent."""
         data = MangoWM_IPC._query(["get", "all-monitors"], log_errors=False)
         ws = MangoWM_IPC._extract_ws_index(data)
         if ws:
@@ -761,31 +915,33 @@ class MangoWM_IPC:
         return 1
 
     @staticmethod
+    def get_focus_and_current_ws() -> Tuple[Optional[str], int]:
+        focus_id, ws = MangoWM_IPC.get_focus_info()
+        if ws:
+            return focus_id, ws
+        return focus_id, MangoWM_IPC._get_current_ws_fallback()
+
+    @staticmethod
+    def get_current_ws() -> int:
+        _, ws = MangoWM_IPC.get_focus_info()
+        if ws:
+            return ws
+        return MangoWM_IPC._get_current_ws_fallback()
+
+    @staticmethod
     def get_focused_client_id() -> Optional[str]:
-        data = MangoWM_IPC._query(["get", "focusing-client"], log_errors=False)
-
-        if isinstance(data, (list, tuple)) and data:
-            data = data[0]
-
-        if not isinstance(data, dict):
-            return None
-
-        direct = MangoWM_IPC._first_str(data, CLIENT_ID_KEYS)
-        if direct:
-            return direct
-
-        nested = data.get("client")
-        if isinstance(nested, dict):
-            return MangoWM_IPC._first_str(nested, CLIENT_ID_KEYS)
-
-        return None
+        focus_id, _ = MangoWM_IPC.get_focus_info()
+        return focus_id
 
     @staticmethod
     def get_overview_state(
         exclude_client_id: Optional[str] = None,
         exclude_own: bool = True,
     ) -> OverviewState:
-        current_ws = MangoWM_IPC.get_current_ws()
+        focus_id, current_ws = MangoWM_IPC.get_focus_info()
+        if current_ws is None:
+            current_ws = MangoWM_IPC._get_current_ws_fallback()
+
         data = MangoWM_IPC._query(["get", "all-clients"], log_errors=True)
 
         ipc_available = data is not None
@@ -796,11 +952,17 @@ class MangoWM_IPC:
 
         raw_clients = MangoWM_IPC._extract_client_list(data)
 
+        own_found: Optional[str] = exclude_client_id
+
         for item in raw_clients:
             if not isinstance(item, dict):
                 continue
 
             if exclude_own and MangoWM_IPC._is_own_client(item, exclude_client_id):
+                if own_found is None:
+                    own_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
+                    if own_id:
+                        own_found = own_id
                 continue
 
             client_id = MangoWM_IPC._first_str(item, CLIENT_ID_KEYS)
@@ -845,6 +1007,8 @@ class MangoWM_IPC:
             current_ws=current_ws,
             clients_by_ws=clients_by_ws,
             ipc_available=ipc_available,
+            focused_client_id=focus_id,
+            own_client_id=own_found,
         )
 
     @staticmethod
@@ -899,6 +1063,49 @@ class MangoWM_IPC:
 
         return None
 
+    @staticmethod
+    def _get_client_ws_list(client_id: str) -> Optional[List[int]]:
+        """
+        Lightweight query for a single client's workspace list.
+
+        Uses `mmsg get client <id>` when available, which is much cheaper than
+        querying all clients for verification.
+        """
+        client_id = (client_id or "").strip()
+        if not client_id:
+            return None
+
+        data = MangoWM_IPC._query(
+            ["get", "client", client_id],
+            timeout=IPC_CLIENT_QUERY_TIMEOUT,
+            log_errors=False,
+        )
+
+        if isinstance(data, (list, tuple)):
+            if data:
+                data = data[0]
+            else:
+                return []
+
+        if not isinstance(data, dict):
+            return None
+
+        ws_list = MangoWM_IPC.parse_tags(data.get("tags"))
+        if ws_list:
+            return ws_list
+
+        nested = data.get("client")
+        if isinstance(nested, dict):
+            ws_list = MangoWM_IPC.parse_tags(nested.get("tags"))
+            if ws_list:
+                return ws_list
+
+        ws = MangoWM_IPC._extract_ws_index(data.get("workspace", data.get("tag")))
+        if ws:
+            return [ws]
+
+        return []
+
     # -------------------------------------------------------------------------
     # Basic dispatch actions
     # -------------------------------------------------------------------------
@@ -909,10 +1116,14 @@ class MangoWM_IPC:
             return False
 
         variants: List[List[str]] = [
-            [f"view,{ws},0"],
             [f"view,{ws}"],
+            [f"view,{ws},0"],
         ]
-        return MangoWM_IPC._dispatch_variants(variants, f"view workspace {ws}")
+        return MangoWM_IPC._dispatch_variants_cached(
+            "view",
+            variants,
+            f"view workspace {ws}",
+        )
 
     @staticmethod
     def dispatch_focus(client_id: str) -> bool:
@@ -928,7 +1139,11 @@ class MangoWM_IPC:
             [f"focus,{client_id}"],
             ["focus", f"client,{client_id}"],
         ]
-        return MangoWM_IPC._dispatch_variants(variants, f"focus client {client_id}")
+        return MangoWM_IPC._dispatch_variants_cached(
+            "focus",
+            variants,
+            f"focus client {client_id}",
+        )
 
     @staticmethod
     def tag_client_to_workspace(client_id: str, ws: int) -> bool:
@@ -949,7 +1164,8 @@ class MangoWM_IPC:
             [f"client,{client_id}", f"tag,{ws},0"],
         ]
 
-        return MangoWM_IPC._dispatch_variants(
+        return MangoWM_IPC._dispatch_variants_cached(
+            "tag",
             variants,
             f"tag client {client_id} -> workspace {ws}",
         )
@@ -1011,6 +1227,12 @@ class MangoWM_IPC:
     @staticmethod
     def _verify_client_on_ws(client_id: str, ws: int) -> bool:
         """Verify that a client is present on a workspace."""
+        ws_list = MangoWM_IPC._get_client_ws_list(client_id)
+
+        if ws_list is not None:
+            return ws in ws_list
+
+        # Fallback: heavier all-clients query.
         try:
             state = MangoWM_IPC.get_overview_state(exclude_own=False)
         except Exception as exc:
@@ -1033,15 +1255,17 @@ class MangoWM_IPC:
 
         variants = MangoWM_IPC._silent_tag_variants(client_id, ws)
 
-        for args in variants:
+        for idx, args in MangoWM_IPC._ordered_indexed_variants("tagsilent", variants):
             if not MangoWM_IPC._dispatch(args, log_errors=False):
                 continue
 
             if not verify:
+                MangoWM_IPC._DISPATCH_CACHE["tagsilent"] = idx
                 return True
 
             time.sleep(MOVE_VERIFY_SLEEP_SECONDS)
             if MangoWM_IPC._verify_client_on_ws(client_id, ws):
+                MangoWM_IPC._DISPATCH_CACHE["tagsilent"] = idx
                 return True
 
         return False
@@ -1064,16 +1288,18 @@ class MangoWM_IPC:
         """
         variants = MangoWM_IPC._silent_tag_variants(client_id, target_ws)
 
-        for args in variants:
+        for idx, args in MangoWM_IPC._ordered_indexed_variants("tagsilent", variants):
             if not MangoWM_IPC._dispatch(args, log_errors=False):
                 continue
 
             if MangoWM_IPC._verify_move_state(client_id, source_ws, target_ws):
+                MangoWM_IPC._DISPATCH_CACHE["tagsilent"] = idx
                 return True
 
             time.sleep(MOVE_VERIFY_SLEEP_SECONDS)
 
             if MangoWM_IPC._verify_move_state(client_id, source_ws, target_ws):
+                MangoWM_IPC._DISPATCH_CACHE["tagsilent"] = idx
                 return True
 
         return False
@@ -1086,6 +1312,20 @@ class MangoWM_IPC:
         If source_ws is known and different from target_ws, also verify that
         the client is no longer present on source workspace.
         """
+        ws_list = MangoWM_IPC._get_client_ws_list(client_id)
+
+        if ws_list is not None:
+            on_target = target_ws in ws_list
+            if not on_target:
+                return False
+
+            if 1 <= source_ws <= NUM_WORKSPACES and source_ws != target_ws:
+                if source_ws in ws_list:
+                    return False
+
+            return True
+
+        # Fallback: heavier all-clients query.
         try:
             state = MangoWM_IPC.get_overview_state(exclude_own=False)
         except Exception as exc:
@@ -1198,8 +1438,7 @@ class MangoWM_IPC:
         time.sleep(MOVE_LATE_CHECK_SLEEP_SECONDS)
 
         try:
-            current_ws = MangoWM_IPC.get_current_ws()
-            current_focus = MangoWM_IPC.get_focused_client_id()
+            current_focus, current_ws = MangoWM_IPC.get_focus_and_current_ws()
 
             if current_ws != prev_ws:
                 MangoWM_IPC.dispatch_view(prev_ws)
@@ -1237,29 +1476,28 @@ class MangoWM_IPC:
         if not client_id or not (1 <= target_ws <= NUM_WORKSPACES):
             return False
 
-        if own_client_id is None:
-            try:
-                own_client_id = MangoWM_IPC.find_own_client_id(
-                    os.getpid(),
-                    WINDOW_TITLE,
-                    WINDOW_ROLE,
-                    APP_NAME,
-                )
-            except Exception as exc:
-                logger.error("Cannot find own client id before move: %s", exc)
-                own_client_id = None
-
         try:
             state = MangoWM_IPC.get_overview_state(
                 exclude_client_id=own_client_id,
                 exclude_own=True,
             )
-            prev_focus = MangoWM_IPC.get_focused_client_id()
         except Exception as exc:
             logger.error("Cannot prepare move context: %s", exc)
             return False
 
+        if not state.ipc_available:
+            logger.warning("IPC unavailable; refusing move.")
+            return False
+
+        if own_client_id is None and state.own_client_id:
+            own_client_id = state.own_client_id
+
+        if own_client_id and client_id == own_client_id:
+            logger.warning("Refusing to move the overview window itself.")
+            return False
+
         prev_ws = state.current_ws
+        prev_focus = state.focused_client_id
 
         # Preferred path: silent move using `tagsilent`.
         if MangoWM_IPC._move_client_silent_with_verify(
@@ -1784,7 +2022,7 @@ class AppWidget(Gtk.EventBox):
         self.main_window = main_window
 
         self.set_visible_window(True)
-        self.set_tooltip_text(client.title)
+        self.set_can_focus(False)
 
         self.connect("button-release-event", self.on_button_release)
 
@@ -1810,10 +2048,12 @@ class AppWidget(Gtk.EventBox):
         # Wrap long titles without allowing workspace boxes to resize unevenly.
         self.label.set_line_wrap(True)
         self.label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        self.label.set_lines(2)
         self.label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.label.set_max_width_chars(24)
         self.label.get_style_context().add_class("app-label")
+
+        # Apply current density metrics.
+        self.label.set_lines(self.main_window.label_lines)
+        self.label.set_max_width_chars(self.main_window.label_max_chars)
 
         self.box.pack_start(self.icon, False, False, 0)
         self.box.pack_start(self.label, True, True, 0)
@@ -1826,19 +2066,32 @@ class AppWidget(Gtk.EventBox):
             self.client.app_id,
             self.client.title,
         )
+
         self.icon.set_from_icon_name(icon_name, Gtk.IconSize.MENU)
+        self.icon.set_pixel_size(self.main_window.icon_pixel_size)
 
         title = self.client.title.strip().replace("\n", " ")
         if not title:
             title = self.client.app_id.strip() or "Unknown Window"
 
         self.label.set_text(title)
-        self.set_tooltip_text(title)
+
+        if self.main_window.settings.low_power:
+            self.set_has_tooltip(False)
+        else:
+            self.set_has_tooltip(True)
+            self.set_tooltip_text(title)
 
     def update(self, new_client: ClientState) -> None:
         if self.client != new_client:
             self.client = new_client
             self._render()
+
+    def apply_metrics(self) -> None:
+        """Re-apply density/DPI metrics after settings change."""
+        self.label.set_lines(self.main_window.label_lines)
+        self.label.set_max_width_chars(self.main_window.label_max_chars)
+        self._render()
 
     # -------------------------------------------------------------------------
     # Click
@@ -1931,10 +2184,12 @@ class WorkspaceWidget(Gtk.EventBox):
         self.main_window = main_window
 
         self.app_widgets: Dict[str, AppWidget] = {}
+        self._current_order: List[str] = []
         self._active = False
         self._drag_leave_source = 0
 
         self.set_visible_window(True)
+        self.set_can_focus(False)
 
         self.connect("button-release-event", self.on_button_release)
         self.connect("destroy", self._on_destroy)
@@ -1959,6 +2214,12 @@ class WorkspaceWidget(Gtk.EventBox):
         self.scroll = Gtk.ScrolledWindow()
         self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.scroll.set_vexpand(True)
+        self.scroll.set_shadow_type(Gtk.ShadowType.NONE)
+
+        try:
+            self.scroll.set_overlay_scrolling(True)
+        except Exception:
+            pass
 
         self.app_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.app_container.get_style_context().add_class("app-container")
@@ -2011,8 +2272,10 @@ class WorkspaceWidget(Gtk.EventBox):
         - Update existing widgets.
         - Create new widgets.
         - Preserve IPC order.
+        - Reorder only when order actually changes.
         """
-        new_ids = {c.id for c in ws_clients}
+        new_order = [c.id for c in ws_clients]
+        new_ids = set(new_order)
         current_ids = set(self.app_widgets.keys())
 
         for dead_id in current_ids - new_ids:
@@ -2023,7 +2286,7 @@ class WorkspaceWidget(Gtk.EventBox):
             except Exception as exc:
                 logger.debug("Cannot destroy app widget %s: %s", dead_id, exc)
 
-        for index, client in enumerate(ws_clients):
+        for client in ws_clients:
             widget = self.app_widgets.get(client.id)
 
             if widget is None:
@@ -2034,15 +2297,23 @@ class WorkspaceWidget(Gtk.EventBox):
             else:
                 widget.update(client)
 
-            try:
-                self.app_container.reorder_child(widget, index)
-            except Exception as exc:
-                logger.debug(
-                    "Cannot reorder app widget %s to index %s: %s",
-                    client.id,
-                    index,
-                    exc,
-                )
+        if new_order != self._current_order:
+            for index, client_id in enumerate(new_order):
+                widget = self.app_widgets.get(client_id)
+                if widget is None:
+                    continue
+
+                try:
+                    self.app_container.reorder_child(widget, index)
+                except Exception as exc:
+                    logger.debug(
+                        "Cannot reorder app widget %s to index %s: %s",
+                        client_id,
+                        index,
+                        exc,
+                    )
+
+            self._current_order = new_order
 
     # -------------------------------------------------------------------------
     # Click
@@ -2163,6 +2434,7 @@ class GridOverview(Gtk.Window):
         super().__init__(title=WINDOW_TITLE)
 
         self.single_instance = single_instance
+        self.settings = UiSettings()
 
         self.set_decorated(False)
         self.set_resizable(True)
@@ -2184,6 +2456,8 @@ class GridOverview(Gtk.Window):
 
         self._poll_source = 0
         self._ipc_watch_source = 0
+        self._fade_source = 0
+        self._fade_step = 0
 
         self._ipc_available = True
         self._last_state: Optional[OverviewState] = None
@@ -2191,6 +2465,15 @@ class GridOverview(Gtk.Window):
 
         self._last_hint = ""
         self._last_cell_size: Tuple[int, int] = (0, 0)
+        self._last_allocation_size: Tuple[int, int] = (0, 0)
+
+        self._css_provider: Optional[Gtk.CssProvider] = None
+
+        # UI metrics, updated by settings/DPI.
+        self._grid_spacing = 24
+        self.icon_pixel_size = 24
+        self.label_lines = 2
+        self.label_max_chars = 24
 
         self.icon_provider = IconProvider()
         self._ipc_worker = IPCWorker()
@@ -2200,11 +2483,12 @@ class GridOverview(Gtk.Window):
 
         self.workspaces: Dict[int, WorkspaceWidget] = {}
 
+        self._update_metrics()
         self._setup_window_backend()
-        self._setup_css()
+        self._load_css_provider()
         self._setup_ui()
         self._setup_instance_socket_watch()
-        self._setup_watch_workers()
+        self._start_watch_workers()
 
         self.connect("destroy", self._on_destroy)
         self.connect("key-press-event", self.on_key_press)
@@ -2217,7 +2501,217 @@ class GridOverview(Gtk.Window):
 
         self._update_hint(True)
         self.request_sync(immediate=True)
-        self._schedule_poll(POLL_INTERVAL_MS)
+        self._schedule_poll(self._current_poll_interval())
+
+        # Fade-in animation, disabled in low-power mode.
+        if self.settings.low_power:
+            self.set_opacity(1.0)
+        else:
+            self.set_opacity(0.0)
+            self._fade_source = GLib.timeout_add(FADE_IN_STEP_MS, self._fade_in_step)
+
+    # -------------------------------------------------------------------------
+    # Settings / metrics / CSS
+    # -------------------------------------------------------------------------
+
+    def _update_metrics(self) -> None:
+        compact = self.settings.density == "compact"
+
+        self._grid_spacing = 14 if compact else 24
+        self.label_lines = 1 if (compact or self.settings.low_power) else 2
+        self.label_max_chars = 18 if compact else 24
+        self.icon_pixel_size = self._compute_icon_pixel_size()
+
+    def _compute_icon_pixel_size(self) -> int:
+        """
+        Compute icon pixel size from density and DPI.
+
+        GTK usually handles HiDPI scaling internally, but using screen
+        resolution gives a more natural physical size across displays.
+        """
+        compact = self.settings.density == "compact"
+        low_power = self.settings.low_power
+
+        if compact:
+            base = 16
+        else:
+            base = 22 if low_power else 28
+
+        dpi = 96.0
+
+        screen = self.get_screen()
+        if screen is None:
+            screen = Gdk.Screen.get_default()
+
+        if screen is not None:
+            try:
+                resolution = screen.get_resolution()
+                if resolution and resolution > 0:
+                    dpi = float(resolution)
+            except Exception:
+                dpi = 96.0
+
+        scale = dpi / 96.0
+        scale = max(1.0, min(2.0, scale))
+
+        size = int(base * scale)
+
+        if low_power:
+            size = min(size, 16 if compact else 24)
+
+        return max(16, min(64, size))
+
+    def _load_css_provider(self) -> None:
+        screen = Gdk.Screen.get_default()
+        if screen is None:
+            logger.error("Cannot get default Gdk.Screen; skipping CSS.")
+            return
+
+        compact = self.settings.density == "compact"
+        low_power = self.settings.low_power
+
+        if low_power:
+            transition_ws = "none"
+            transition_app = "none"
+            transition_label = "none"
+            shadow_hover = "none"
+            shadow_active = "none"
+            shadow_drop = "none"
+        else:
+            transition_ws = (
+                "background-color 140ms ease, "
+                "border-color 140ms ease, "
+                "box-shadow 140ms ease"
+            )
+            transition_app = (
+                "background-color 110ms ease, "
+                "border-color 110ms ease, "
+                "opacity 110ms ease"
+            )
+            transition_label = "color 110ms ease"
+
+            shadow_hover = "0 2px 10px rgba(0, 0, 0, 0.25)"
+            shadow_active = (
+                "0 0 0 1px rgba(196, 167, 231, 0.45), "
+                "0 0 18px rgba(196, 167, 231, 0.28), "
+                "0 6px 18px rgba(0, 0, 0, 0.22)"
+            )
+            shadow_drop = (
+                "inset 0 0 0 2px rgba(235, 111, 146, 0.55), "
+                "0 0 18px rgba(235, 111, 146, 0.45)"
+            )
+
+        if compact:
+            css_vars = {
+                "window_alpha": "0.94",
+                "ws_radius": "14px",
+                "ws_padding": "10px",
+                "title_font": "14px",
+                "label_font": "12px",
+                "hint_font": "12px",
+                "app_radius": "7px",
+                "app_padding": "5px",
+                "app_margin": "4px",
+            }
+        else:
+            css_vars = {
+                "window_alpha": "0.92",
+                "ws_radius": "18px",
+                "ws_padding": "14px",
+                "title_font": "15px",
+                "label_font": "13px",
+                "hint_font": "13px",
+                "app_radius": "10px",
+                "app_padding": "9px",
+                "app_margin": "7px",
+            }
+
+        css_vars.update(
+            {
+                "transition_ws": transition_ws,
+                "transition_app": transition_app,
+                "transition_label": transition_label,
+                "shadow_hover": shadow_hover,
+                "shadow_active": shadow_active,
+                "shadow_drop": shadow_drop,
+            }
+        )
+
+        css = CSS_TEMPLATE.substitute(css_vars)
+
+        provider = Gtk.CssProvider()
+        try:
+            provider.load_from_data(css.encode("utf-8"))
+        except Exception as exc:
+            logger.error("Cannot load CSS: %s", exc)
+            return
+
+        if self._css_provider is not None:
+            try:
+                Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
+            except Exception as exc:
+                logger.debug("Cannot remove old CSS provider: %s", exc)
+
+        try:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen,
+                provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+            self._css_provider = provider
+        except Exception as exc:
+            logger.error("Cannot add CSS provider: %s", exc)
+
+    def _apply_settings(self, restart_watch: bool = False) -> None:
+        if self._closed:
+            return
+
+        self._update_metrics()
+        self._load_css_provider()
+
+        try:
+            self.grid.set_column_spacing(self._grid_spacing)
+            self.grid.set_row_spacing(self._grid_spacing)
+        except Exception as exc:
+            logger.debug("Cannot update grid spacing: %s", exc)
+
+        for ws in self.workspaces.values():
+            for app_widget in ws.app_widgets.values():
+                app_widget.apply_metrics()
+
+        self._refresh_cell_sizes()
+        self._update_hint(self._ipc_available)
+
+        if restart_watch:
+            self._stop_watch_workers()
+            self._start_watch_workers()
+
+        self._schedule_poll(self._current_poll_interval())
+
+    def set_density(self, density: str) -> None:
+        density = density.strip().lower()
+        if density not in ("compact", "large"):
+            return
+
+        if self.settings.density == density:
+            return
+
+        # Avoid changing layout while drag & drop is active.
+        if self._drag_active_count > 0 or self._pending_mutations > 0:
+            return
+
+        self.settings.density = density
+        self.settings.save()
+        self._apply_settings(restart_watch=False)
+
+    def toggle_low_power(self) -> None:
+        # Avoid changing layout while drag & drop is active.
+        if self._drag_active_count > 0 or self._pending_mutations > 0:
+            return
+
+        self.settings.low_power = not self.settings.low_power
+        self.settings.save()
+        self._apply_settings(restart_watch=True)
 
     # -------------------------------------------------------------------------
     # Setup
@@ -2259,39 +2753,30 @@ class GridOverview(Gtk.Window):
         default_w, default_h = 1080, 720
 
         screen = self.get_screen()
-        if screen is not None and screen.get_n_monitors() > 0:
-            monitor = screen.get_primary_monitor()
-            if monitor < 0 or monitor >= screen.get_n_monitors():
-                monitor = 0
+        if screen is not None:
+            rgba = screen.get_rgba_visual()
+            if rgba is not None:
+                try:
+                    self.set_visual(rgba)
+                except Exception as exc:
+                    logger.debug("Cannot set RGBA visual: %s", exc)
 
-            geom = screen.get_monitor_geometry(monitor)
-            default_w = max(720, min(1280, geom.width - 120))
-            default_h = max(520, min(860, geom.height - 120))
+            if screen.get_n_monitors() > 0:
+                monitor = screen.get_primary_monitor()
+                if monitor < 0 or monitor >= screen.get_n_monitors():
+                    monitor = 0
+
+                geom = screen.get_monitor_geometry(monitor)
+                default_w = max(720, min(1280, geom.width - 120))
+                default_h = max(520, min(860, geom.height - 120))
 
         self.set_default_size(default_w, default_h)
         self.set_size_request(720, 560)
 
-    def _setup_css(self) -> None:
-        screen = Gdk.Screen.get_default()
-        if screen is None:
-            logger.error("Cannot get default Gdk.Screen; skipping CSS.")
-            return
-
-        provider = Gtk.CssProvider()
-
-        try:
-            provider.load_from_data(CSS)
-            Gtk.StyleContext.add_provider_for_screen(
-                screen,
-                provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-            )
-        except Exception as exc:
-            logger.error("Cannot load CSS: %s", exc)
-
     def _setup_ui(self) -> None:
         self.bg_eventbox = Gtk.EventBox()
         self.bg_eventbox.set_visible_window(True)
+        self.bg_eventbox.set_can_focus(False)
         self.bg_eventbox.get_style_context().add_class("bg-overlay")
         self.bg_eventbox.set_events(
             self.bg_eventbox.get_events()
@@ -2315,8 +2800,8 @@ class GridOverview(Gtk.Window):
         self.grid = Gtk.Grid()
         self.grid.set_column_homogeneous(True)
         self.grid.set_row_homogeneous(True)
-        self.grid.set_column_spacing(24)
-        self.grid.set_row_spacing(24)
+        self.grid.set_column_spacing(self._grid_spacing)
+        self.grid.set_row_spacing(self._grid_spacing)
         self.grid.set_halign(Gtk.Align.CENTER)
         self.grid.set_valign(Gtk.Align.CENTER)
 
@@ -2325,7 +2810,8 @@ class GridOverview(Gtk.Window):
         self.hint_label = Gtk.Label()
         self.hint_label.get_style_context().add_class("hint-label")
         self.hint_label.set_justify(Gtk.Justification.CENTER)
-        self.hint_label.set_max_width_chars(110)
+        self.hint_label.set_max_width_chars(120)
+        self.hint_label.set_line_wrap(True)
 
         self.outer_box.pack_start(self.hint_label, False, False, 0)
 
@@ -2351,17 +2837,52 @@ class GridOverview(Gtk.Window):
         except Exception as exc:
             logger.error("Cannot watch single-instance socket: %s", exc)
 
-    def _setup_watch_workers(self) -> None:
+    def _start_watch_workers(self) -> None:
+        if self._closed:
+            return
+
         watch_commands: List[List[str]] = [
             ["watch", "all-clients"],
             ["watch", "focusing-client"],
-            ["watch", "all-tags"],
         ]
+
+        # In low-power mode, skip all-tags watcher to reduce process count and
+        # IPC noise. Polling still acts as a fallback.
+        if not self.settings.low_power:
+            watch_commands.append(["watch", "all-tags"])
 
         for cmd in watch_commands:
             worker = MmsgWatchWorker(cmd, self._notify_watch_event)
             worker.start()
             self._watch_workers.append(worker)
+
+    def _stop_watch_workers(self) -> None:
+        for worker in self._watch_workers:
+            try:
+                worker.stop()
+            except Exception as exc:
+                logger.debug("Cannot stop watch worker: %s", exc)
+
+        self._watch_workers = []
+
+    # -------------------------------------------------------------------------
+    # Animation
+    # -------------------------------------------------------------------------
+
+    def _fade_in_step(self) -> bool:
+        if self._closed:
+            return False
+
+        self._fade_step += 1
+        opacity = self._fade_step / float(FADE_IN_STEPS)
+
+        if opacity >= 1.0:
+            self.set_opacity(1.0)
+            self._fade_source = 0
+            return False
+
+        self.set_opacity(opacity)
+        return True
 
     # -------------------------------------------------------------------------
     # Window placement
@@ -2412,6 +2933,7 @@ class GridOverview(Gtk.Window):
             "_poll_source",
             "_drag_failsafe_source",
             "_ipc_watch_source",
+            "_fade_source",
         ):
             source = getattr(self, source_attr, 0)
             if source:
@@ -2421,11 +2943,7 @@ class GridOverview(Gtk.Window):
                     logger.debug("Cannot remove GLib source %s: %s", source_attr, exc)
                 setattr(self, source_attr, 0)
 
-        for worker in self._watch_workers:
-            try:
-                worker.stop()
-            except Exception as exc:
-                logger.debug("Cannot stop watch worker: %s", exc)
+        self._stop_watch_workers()
 
         try:
             self._ipc_worker.stop()
@@ -2436,6 +2954,17 @@ class GridOverview(Gtk.Window):
             self.single_instance.release()
         except Exception as exc:
             logger.debug("Cannot release single-instance resources: %s", exc)
+
+        if self._css_provider is not None:
+            screen = Gdk.Screen.get_default()
+            if screen is not None:
+                try:
+                    Gtk.StyleContext.remove_provider_for_screen(
+                        screen,
+                        self._css_provider,
+                    )
+                except Exception as exc:
+                    logger.debug("Cannot remove CSS provider: %s", exc)
 
         try:
             self.hide()
@@ -2462,7 +2991,12 @@ class GridOverview(Gtk.Window):
         if self._closed:
             return False
 
-        self.request_sync(delay_ms=WATCH_EVENT_SYNC_DEBOUNCE_MS)
+        delay = (
+            WATCH_EVENT_SYNC_DEBOUNCE_LOW_POWER_MS
+            if self.settings.low_power
+            else WATCH_EVENT_SYNC_DEBOUNCE_MS
+        )
+        self.request_sync(delay_ms=delay)
         return False
 
     # -------------------------------------------------------------------------
@@ -2578,7 +3112,7 @@ class GridOverview(Gtk.Window):
 
         try:
             own_id = MangoWM_IPC.find_own_client_id(
-                os.getpid(),
+                OWN_PID,
                 WINDOW_TITLE,
                 WINDOW_ROLE,
                 APP_NAME,
@@ -2628,25 +3162,48 @@ class GridOverview(Gtk.Window):
         if self._closed:
             return
 
-        if allocation.width < 100 or allocation.height < 100:
+        self._last_allocation_size = (allocation.width, allocation.height)
+        self._update_cell_sizes(allocation.width, allocation.height)
+
+    def _refresh_cell_sizes(self) -> None:
+        width, height = self._last_allocation_size
+
+        if width < 100 or height < 100:
+            width, height = self.get_size()
+
+        self._last_cell_size = (0, 0)
+        self._update_cell_sizes(width, height)
+
+    def _update_cell_sizes(self, width: int, height: int) -> None:
+        if self._closed:
             return
 
-        spacing_x = 24
-        spacing_y = 24
+        if width < 100 or height < 100:
+            return
+
+        compact = self.settings.density == "compact"
+        spacing = self._grid_spacing
 
         # Estimated chrome/padding overhead.
-        chrome_w = 110
-        chrome_h = 160
+        chrome_w = 90 if compact else 110
+        chrome_h = 120 if compact else 160
 
         cell_w = (
-            allocation.width - chrome_w - spacing_x * (GRID_COLUMNS - 1)
+            width - chrome_w - spacing * (GRID_COLUMNS - 1)
         ) // GRID_COLUMNS
         cell_h = (
-            allocation.height - chrome_h - spacing_y * (GRID_ROWS - 1)
+            height - chrome_h - spacing * (GRID_ROWS - 1)
         ) // GRID_ROWS
 
-        cell_w = max(180, min(380, cell_w))
-        cell_h = max(120, min(300, cell_h))
+        if compact:
+            min_w, max_w = 160, 320
+            min_h, max_h = 100, 240
+        else:
+            min_w, max_w = 200, 420
+            min_h, max_h = 140, 320
+
+        cell_w = max(min_w, min(max_w, cell_w))
+        cell_h = max(min_h, min(max_h, cell_h))
 
         new_size = (cell_w, cell_h)
         if new_size == self._last_cell_size:
@@ -2660,6 +3217,20 @@ class GridOverview(Gtk.Window):
     # -------------------------------------------------------------------------
     # Polling & sync
     # -------------------------------------------------------------------------
+
+    def _current_poll_interval(self) -> int:
+        if self._ipc_available:
+            return (
+                LOW_POWER_POLL_INTERVAL_MS
+                if self.settings.low_power
+                else POLL_INTERVAL_MS
+            )
+
+        return (
+            LOW_POWER_POLL_INTERVAL_IPC_DOWN_MS
+            if self.settings.low_power
+            else POLL_INTERVAL_IPC_DOWN_MS
+        )
 
     def _schedule_poll(self, interval_ms: int) -> None:
         if self._closed:
@@ -2686,14 +3257,24 @@ class GridOverview(Gtk.Window):
         ):
             self.request_sync(delay_ms=0)
 
-        interval = POLL_INTERVAL_MS if self._ipc_available else POLL_INTERVAL_IPC_DOWN_MS
-        self._schedule_poll(interval)
+        self._schedule_poll(self._current_poll_interval())
 
         return False
 
-    def request_sync(self, delay_ms: int = SYNC_DEBOUNCE_MS, immediate: bool = False) -> None:
+    def request_sync(
+        self,
+        delay_ms: Optional[int] = None,
+        immediate: bool = False,
+    ) -> None:
         if self._closed:
             return
+
+        if delay_ms is None:
+            delay_ms = (
+                SYNC_DEBOUNCE_LOW_POWER_MS
+                if self.settings.low_power
+                else SYNC_DEBOUNCE_MS
+            )
 
         if self._sync_source:
             try:
@@ -2733,43 +3314,29 @@ class GridOverview(Gtk.Window):
         if self._closed:
             return
 
-        own_id = self._own_client_id
-
-        if own_id is None:
-            try:
-                own_id = MangoWM_IPC.find_own_client_id(
-                    os.getpid(),
-                    WINDOW_TITLE,
-                    WINDOW_ROLE,
-                    APP_NAME,
-                )
-            except Exception as exc:
-                logger.error("Cannot find own client id during sync: %s", exc)
-                own_id = None
-
         state: Optional[OverviewState] = None
 
         try:
             state = MangoWM_IPC.get_overview_state(
-                exclude_client_id=own_id,
+                exclude_client_id=self._own_client_id,
                 exclude_own=True,
             )
         except Exception as exc:
             logger.error("Cannot fetch overview state: %s", exc)
         finally:
             if not self._closed:
-                GLib.idle_add(self._apply_state, state, own_id)
+                GLib.idle_add(self._apply_state, state)
 
-    def _apply_state(self, state: Optional[OverviewState], own_id: Optional[str]) -> bool:
+    def _apply_state(self, state: Optional[OverviewState]) -> bool:
         if self._closed:
             return False
-
-        if own_id and self._own_client_id != own_id:
-            self._own_client_id = own_id
 
         self._sync_in_flight = False
 
         if state is not None:
+            if state.own_client_id and self._own_client_id != state.own_client_id:
+                self._own_client_id = state.own_client_id
+
             self._update_ui(state)
         else:
             self._ipc_available = False
@@ -2804,15 +3371,24 @@ class GridOverview(Gtk.Window):
 
         if ipc_available:
             if EXIT_ON_APP_CLICK:
-                text = (
-                    "Drag app to move • Click workspace or app to switch and close • "
-                    "ESC to close"
+                actions = (
+                    "Drag app to move • Click workspace or app to switch and close"
                 )
             else:
-                text = (
+                actions = (
                     "Drag app to move • Click workspace to switch and close • "
-                    "Click app to focus without closing • ESC to close"
+                    "Click app to focus without closing"
                 )
+
+            density = self.settings.density.capitalize()
+            performance = "Low-power" if self.settings.low_power else "Normal"
+
+            mode_line = (
+                f"Density: {density} • Performance: {performance} • "
+                "Keys: C compact, L large, P performance, ESC close"
+            )
+
+            text = f"{actions}\n{mode_line}"
         else:
             text = (
                 "MangoWM IPC (mmsg) unavailable or command rejected • "
@@ -3071,8 +3647,30 @@ class GridOverview(Gtk.Window):
         _widget: Gtk.Widget,
         event: Gdk.EventKey,
     ) -> bool:
-        if event.keyval == Gdk.KEY_Escape:
+        key = Gdk.keyval_to_lower(event.keyval)
+
+        if key == Gdk.KEY_Escape:
             self.close_app()
+            return True
+
+        # Ignore keybindings with major modifiers.
+        if event.state & (
+            Gdk.ModifierType.CONTROL_MASK
+            | Gdk.ModifierType.MOD1_MASK
+            | Gdk.ModifierType.SUPER_MASK
+        ):
+            return False
+
+        if key == Gdk.KEY_c:
+            self.set_density("compact")
+            return True
+
+        if key == Gdk.KEY_l:
+            self.set_density("large")
+            return True
+
+        if key == Gdk.KEY_p:
+            self.toggle_low_power()
             return True
 
         return False

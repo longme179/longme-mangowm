@@ -111,7 +111,7 @@ class RecorderGUI(Gtk.Window):
         # Lệnh quay màn hình bằng wl-screenrec
         cmd = [
             "wl-screenrec",
-            "--max-fps", "30",       # Giới hạn 30 FPS
+            "--max-fps", "60",       # Giới hạn 60 FPS
             "--codec", "hevc",       # Codec H265 (nén tốt, hình nét)
             # "-b", "2 MB"           # Bỏ comment nếu muốn giảm bitrate cho file nhỏ hơn
             "--audio",               # Bật quay âm thanh

@@ -119,10 +119,10 @@
     "backlight": {
         "format": "{icon} {percent}%",
         "format-icons": ["󰃞", "󰃟", "󰃠"],
-        "on-scroll-up": "swayosd-client --brightness raise",
-        "on-scroll-down": "swayosd-client --brightness lower",
+        "on-scroll-up": "brightnessctl set 5%+",
+        "on-scroll-down": "brightnessctl set 5%-",
         "on-click-right": "~/.config/mango/waybar/scripts/nightmode-toggle.sh",
-        "tooltip-format": "Độ sáng: {percent}%\nClick phải: bật/tắt night mode"
+        "tooltip-format": "Brightness: {percent}%\nR-Click: Toggle night mode"
     },
     "network": {
         "format-wifi": "{icon}  Wireless",

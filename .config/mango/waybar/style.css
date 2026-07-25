@@ -25,6 +25,8 @@
 @define-color green   #31748f;
 @define-color teal    #9ccfd8;
 @define-color sky     #9ccfd8;
+@define-color rose    #ebbcba;
+@define-color iris    #c4a7e7;
 
 window#waybar {
     background: transparent;
@@ -193,25 +195,37 @@ tooltip label {
 
 
 
-/* ---------- Custom Grid & Launcher ---------- */
-#custom-grid, #custom-launcher {
+/* ---------- Custom Grid & Launcher (ghép thành 1 pill) ---------- */
+#custom-grid,
+#custom-launcher {
     background-color: alpha(@surface0, 0.5);
-    border-radius: 10px;
-    margin: 5px 3px;
     padding: 0 10px;
+    /* margin & border-radius khai báo riêng bên dưới */
 }
 
-/* Bo góc trái cho nút Grid */
+/* Nút Grid: bo góc trái, mép PHẢI = 0 */
 #custom-grid {
+    margin: 5px 0 5px 5px;          /* trên | phải | dưới | trái */
     border-radius: 10px 0 0 10px;
-    margin-left: 5px;
-    color: @rose; /* Màu hồng nhạt cho nút Grid */
+    color: @rose;
 }
-/* Bo góc phải cho nút Apps */
+
+/* Nút Apps: bo góc phải, mép TRÁI = 0 */
 #custom-launcher {
+    margin: 5px 3px 5px 0;
     border-radius: 0 10px 10px 0;
-    margin-right: 3px;
-    color: @iris; /* Màu tím nhạt cho nút App */
+    color: @iris;
+    border-left: 1px solid alpha(@surface1, 0.35); /* vạch ngăn cách nhẹ, bỏ nếu thích liền hẳn */
+}
+
+/* Hover */
+#custom-grid:hover {
+    background-color: @rose;
+    color: @base;
+}
+#custom-launcher:hover {
+    background-color: @iris;
+    color: @base;
 }
 
 /* Hiệu ứng hover */

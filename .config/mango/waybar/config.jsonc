@@ -11,10 +11,10 @@
 
     // ===== TRÁI: workspaces + app đang mở =====
     "modules-left": [
-        "custom/grid", "custom/launcher", "wlr/taskbar"
+        "custom/grid", "custom/launcher", "wlr/taskbar", "mpris"
     ],
     // ===== GIỮA: media đang phát, thời tiết, ngày giờ =====
-    "modules-center": ["mpris", "custom/weather", "clock", "battery"],
+    "modules-center": ["custom/weather", "clock", "battery"],
 
     // ===== PHẢI: tray, loa/mic, brightness, wifi, bluetooth, power =====
     "modules-right": [
@@ -137,8 +137,8 @@
     },
     "bluetooth": {
         "format": "󰂯",
-        "format-connected": "󰂱 {device_alias}",
-        "format-connected-battery": "󰂱 {device_alias} {device_battery_percentage}%",
+        "format-connected": "󰂱 Connected",
+        "format-connected-battery": "󰂱 Battery:{device_battery_percentage}%",
         "format-off": "󰂲",
         "format-disabled": "󰂲",
         "tooltip-format": "{controller_alias}\t{controller_address}",
@@ -147,7 +147,7 @@
         "on-click": "blueman-manager"
     },
     "custom/power": {
-        "format": "Power",
+        "format": "⏻ ",
         "on-click": "wlogout",
         "tooltip": false
     },

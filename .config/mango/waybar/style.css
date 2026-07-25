@@ -183,30 +183,38 @@ tooltip label {
     background-color: @accent;
 }
 
-/* ===== Grid & Launcher: 1 pill ghép (giữ nguyên cấu trúc) ===== */
+/* ===== Grid & Launcher: 1 pill — 2 nút riêng biệt ===== */
 #custom-grid,
 #custom-launcher {
-    background-color: alpha(@overlay, 0.55);
-    padding: 0 10px;
+    background-color: alpha(@overlay, 0.55);   /* 2 nửa cùng màu → pill liền mạch */
 }
+
 #custom-grid {
     margin: 5px 0 5px 5px;
+    padding: 0 10px 0 12px;       /* mép trong 10px · mép ngoài 12px */
     border-radius: 10px 0 0 10px;
-    color: @accent;              /* Grid = accent */
+    color: @accent;               /* Grid = accent */
 }
+
 #custom-launcher {
-    margin: 5px 3px 5px 0;
+    margin: 5px 3px 5px -4px;
+    padding: 0 12px 0 10px;       /* mép ngoài 12px · mép trong 10px */
     border-radius: 0 10px 10px 0;
-    color: @text;                /* Apps = trung tính (bỏ iris) */
-    border-left: 1px solid alpha(@muted, 0.4);
+    color: @text;                 /* Apps = trung tính */
+    /*border-left: 1px solid alpha(@muted, 0.35);    vạch chia hairline giữa 2 nút */
 }
-#custom-grid:hover {
-    background-color: @accent;
-    color: @base;
-}
+
+/* Hover: tint nhẹ phủ đúng nửa đó — pill vẫn liền, nút vẫn rõ */
+#custom-grid:hover,
 #custom-launcher:hover {
-    background-color: alpha(@accent, 0.2);
-    color: @text;
+    background-color: alpha(@accent, 0.16);
+    color: @accent;
+}
+
+/* Nhấn: tint đậm hơn một nấc */
+#custom-grid:active,
+#custom-launcher:active {
+    background-color: alpha(@accent, 0.3);
 }
 
 /* ===== Battery: mức cảnh báo tăng dần bằng chính accent ===== */

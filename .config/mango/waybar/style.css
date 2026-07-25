@@ -51,7 +51,6 @@ tooltip label {
 }
 
 /* module chung: khoảng cách + pill nền */
-#taskbar,
 #mpris,
 #custom-weather,
 #clock,
@@ -97,9 +96,42 @@ tooltip label {
     background-color: alpha(@lavender, 0.35);
 }
 
+/* ---------- Taskbar: ẩn hoàn toàn khi không có cửa sổ ---------- */
+/* Container rỗng → không nền, không padding → vô hình */
+#taskbar {
+    background: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+}
+
+/* Các app ghép thành 1 pill liền; không có app nào → không vẽ gì */
 #taskbar button {
     all: unset;
-    padding: 0 5px;
+    background-color: alpha(@surface0, 0.5);
+    color: @subtext;
+    border-radius: 0;
+    margin: 5px 0;
+    padding: 0 10px;
+}
+/* Nút ĐẦU: bo góc trái + margin trái */
+#taskbar button:first-child {
+    border-top-left-radius: 10px;
+    border-bottom-left-radius: 10px;
+    margin-left: 5px;
+}
+/* Nút CUỐI: bo góc phải + margin phải */
+#taskbar button:last-child {
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+    margin-right: 3px;
+}
+#taskbar button.active {
+    color: @text;
+    background-color: alpha(@lavender, 0.25);
+}
+#taskbar button:hover {
+    background-color: alpha(@lavender, 0.35);
 }
 
 /* ---------- GIỮA ---------- */
@@ -228,15 +260,7 @@ tooltip label {
     color: @base;
 }
 
-/* Hiệu ứng hover */
-#custom-grid:hover {
-    background-color: @rose;
-    color: @base;
-}
-#custom-launcher:hover {
-    background-color: @iris;
-    color: @base;
-}
+
 
 #battery {
     color: @green;

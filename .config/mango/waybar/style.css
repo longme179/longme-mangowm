@@ -1,37 +1,92 @@
-/* ~/.config/waybar/style.css */
-/* Rose Pine — 1 accent duy nhất: rose */
+/* ============================================================
+ * Waybar stylesheet — MangoWM · Rose Pine · single accent
+ * ------------------------------------------------------------
+ * TABLE OF CONTENTS
+ *   [1] Design tokens (palette · alpha scale · spacing system)
+ *   [2] Global
+ *   [3] Bar container
+ *   [4] Tooltip
+ *   [5] Shared module pill
+ *   [6] Left   — Grid & Launcher · Taskbar · Workspaces
+ *   [7] Center — MPRIS · Weather · Clock
+ *   [8] Right  — Tray · Audio · Backlight · Network · Bluetooth
+ *                · Battery · Power
+ *
+ * QUICK TWEAKS
+ *   · Change theme color → edit ONE line: @define-color accent
+ *   · Add a new module   → add its id to the list in [5]
+ *   · Roundness          → search "radius" (10px pills · 14px bar)
+ *   · Spacing            → see "Spacing system" note in [1]
+ * ==========================================================*/
 
-* {
-    /* Đổi tên font dưới đây */
-    font-family: "FantasqueSansM Nerd Font", "IosevkaTerm Nerd Font", sans-serif;
-    font-size: 16px;
-    font-weight: 600;
-    min-height: 0;
-}
 
-/* ===== Rose Pine palette ===== */
+/* ============================================================
+ * [1] DESIGN TOKENS
+ * ==========================================================*/
+
+/* --- Rose Pine palette (single accent: rose) --- */
 @define-color base    #191724;
 @define-color surface #1f1d2e;
 @define-color overlay #26233a;
 @define-color muted   #6e6a86;
 @define-color subtle  #908caa;
 @define-color text    #e0def4;
-@define-color accent  #ebbcba;   /* rose — accent DUY NHẤT */
+@define-color accent  #ebbcba;   /* rose — the ONLY accent color */
 
-/* ===== Bar: nền trong suốt ===== */
+/* --- Alpha scale (used with alpha(@color, x) across the file) ---
+ *   0.12  subtle state      (workspace occupied)
+ *   0.15  hover / warning   (thin accent tint)
+ *   0.20  active / focused  (taskbar's running app)
+ *   0.30  pressed / alert   (:active, needs-attention)
+ *   0.55  pill background   (overlay glass)
+ *   0.75  bar background    (surface glass)
+ *   0.95  tooltip           (nearly opaque for readability)
+ */
+
+/* --- Spacing system ---
+ *   bar padding    : 0 8px
+ *   module margin  : 5px 3px   (top-bottom 5 · left-right 3)
+ *   module padding : 0 10px
+ *   radius         : 10px pills · 14px bar
+ *   NOTE: config.jsonc sets "spacing": 4 (4px between every module).
+ *         Joined pills cancel it with a -4px margin (see Launcher).
+ */
+
+
+/* ============================================================
+ * [2] GLOBAL
+ * ==========================================================*/
+
+* {
+    /* Change your font here */
+    font-family: "FantasqueSansM Nerd Font", "IosevkaTerm Nerd Font", sans-serif;
+    font-size: 16px;      /* rounded font — 14~16px reads best */
+    font-weight: 600;
+    min-height: 0;        /* prevents oversized module height */
+}
+
+
+/* ============================================================
+ * [3] BAR CONTAINER
+ * ==========================================================*/
+
 window#waybar {
     background: transparent;
 }
 
 window#waybar > box {
     background-color: alpha(@surface, 0.75);
-    border-radius: 14px;
     border: 2px solid alpha(@muted, 0.3);
+    border-radius: 14px;
     margin: 0;
     padding: 0 8px;
 }
 
-/* ===== Tooltip ===== */
+
+/* ============================================================
+ * [4] TOOLTIP
+ * ==========================================================*/
+
 tooltip {
     background: alpha(@surface, 0.95);
     border: 1px solid alpha(@muted, 0.5);
@@ -42,7 +97,13 @@ tooltip label {
     padding: 4px;
 }
 
-/* ===== Module chung: pill nền trong, chữ trung tính ===== */
+
+/* ============================================================
+ * [5] SHARED MODULE PILL
+ * Every id listed here gets the same glass pill automatically.
+ * Adding a new module? Just append its id to this list.
+ * ==========================================================*/
+
 #mpris,
 #custom-weather,
 #clock,
@@ -52,6 +113,7 @@ tooltip label {
 #backlight,
 #network,
 #bluetooth,
+#battery,
 #custom-power {
     background-color: alpha(@overlay, 0.55);
     color: @text;
@@ -60,45 +122,58 @@ tooltip label {
     padding: 0 10px;
 }
 
-/* hover chung: phủ một lớp accent mỏng */
+/* Shared hover: thin accent tint (clickable modules only) */
+#mpris:hover,
 #pulseaudio:hover,
 #pulseaudio.microphone:hover,
 #backlight:hover,
 #network:hover,
-#bluetooth:hover,
-#mpris:hover {
+#bluetooth:hover {
     background-color: alpha(@accent, 0.15);
 }
 
-/* ===== Workspaces (dự phòng nếu sau này thêm vào config) ===== */
-#workspaces {
-    padding: 0 4px;
+
+/* ============================================================
+ * [6] LEFT — Grid & Launcher · Taskbar · Workspaces
+ * ==========================================================*/
+
+/* --- Grid & Launcher: one pill, two separate buttons ---
+ * Grid owns the left cap, Launcher owns the right cap.
+ * Launcher's -4px left margin cancels the bar's "spacing": 4.
+ */
+#custom-grid,
+#custom-launcher {
+    background-color: alpha(@overlay, 0.55);
 }
-#workspaces button {
-    all: unset;
-    color: @subtle;
-    padding: 0 7px;
-    margin: 0 2px;
-    border-radius: 8px;
-    min-width: 10px;
+#custom-grid {
+    margin: 5px 0 5px 5px;
+    padding: 0 10px 0 12px;        /* inner 10 · outer 12 */
+    border-radius: 10px 0 0 10px;
+    color: @accent;
 }
-#workspaces button.occupied {
+#custom-launcher {
+    margin: 5px 3px 5px -4px;      /* -4px cancels bar spacing */
+    padding: 0 12px 0 10px;        /* outer 12 · inner 10 */
+    border-radius: 0 10px 10px 0;
     color: @text;
-    background-color: alpha(@accent, 0.12);
+    /* optional hairline divider between the two buttons:
+    border-left: 1px solid alpha(@muted, 0.35); */
 }
-#workspaces button.focused {
-    color: @base;
-    background-color: @accent;
+#custom-grid:hover,
+#custom-launcher:hover {
+    background-color: alpha(@accent, 0.15);
+    color: @accent;
 }
-#workspaces button.urgent {
-    color: @base;
-    background-color: @accent;
-}
-#workspaces button:hover {
-    background-color: alpha(@accent, 0.25);
+#custom-grid:active,
+#custom-launcher:active {
+    background-color: alpha(@accent, 0.30);
 }
 
-/* ===== Taskbar: ẩn khi rỗng, ghép thành 1 pill ===== */
+/* --- Taskbar: hidden when empty, joins into one pill ---
+ * The container carries no background/padding/margin, so with
+ * zero buttons it renders nothing. First/last buttons own the
+ * rounded caps; a single button gets both caps automatically.
+ */
 #taskbar {
     background: none;
     border-radius: 0;
@@ -125,106 +200,84 @@ tooltip label {
 }
 #taskbar button.active {
     color: @accent;
-    background-color: alpha(@accent, 0.15);
+    background-color: alpha(@accent, 0.20);   /* focused app */
 }
 #taskbar button:hover {
-    background-color: alpha(@accent, 0.25);
+    background-color: alpha(@accent, 0.15);
 }
 
-/* ===== GIỮA ===== */
+/* --- Workspaces (OPTIONAL: not in current config, kept ready) --- */
+#workspaces {
+    padding: 0 4px;
+}
+#workspaces button {
+    all: unset;
+    color: @subtle;
+    padding: 0 7px;
+    margin: 0 2px;
+    border-radius: 8px;
+    min-width: 10px;
+}
+#workspaces button.occupied {
+    color: @text;
+    background-color: alpha(@accent, 0.12);
+}
+#workspaces button.focused,
+#workspaces button.urgent {
+    color: @base;
+    background-color: @accent;
+}
+#workspaces button:hover {
+    background-color: alpha(@accent, 0.15);
+}
+
+
+/* ============================================================
+ * [7] CENTER — MPRIS · Weather · Clock
+ * ==========================================================*/
+
 #mpris.paused {
-    color: @subtle;              /* pause → trầm xuống */
+    color: @subtle;                /* paused → dim down */
 }
 
 #clock {
-    color: @accent;              /* đồng hồ = điểm nhấn trung tâm */
+    color: @accent;                /* centerpiece highlight */
     font-weight: 700;
 }
 
-/* ===== PHẢI ===== */
+
+/* ============================================================
+ * [8] RIGHT — Tray · Audio · Backlight · Network · Bluetooth
+ *             · Battery · Power
+ * ==========================================================*/
+
 #tray {
-    padding: 0 8px;
+    padding: 0 8px;                /* slightly tighter than shared 10px */
 }
 #tray > .passive {
     -gtk-icon-effect: dim;
 }
 #tray > .needs-attention {
     -gtk-icon-effect: highlight;
-    background-color: alpha(@accent, 0.3);
+    background-color: alpha(@accent, 0.30);
     border-radius: 8px;
 }
 
-#pulseaudio.muted {
-    color: @subtle;
-}
-#pulseaudio.microphone.source-muted {
-    color: @subtle;
-}
-
+/* Off / muted / disconnected → dim (grouped, one place to edit) */
+#pulseaudio.muted,
+#pulseaudio.microphone.source-muted,
 #network.disconnected,
-#network.disabled {
-    color: @subtle;
-}
-
-#bluetooth.connected {
-    color: @accent;              /* có kết nối → accent */
-}
+#network.disabled,
 #bluetooth.off,
 #bluetooth.disabled {
     color: @subtle;
 }
 
-#custom-power {
-    color: @base;
-    background-color: alpha(@accent, 0.9);   /* pill accent đặc */
-    font-weight: 800;
-}
-#custom-power:hover {
-    background-color: @accent;
-}
-
-/* ===== Grid & Launcher: 1 pill — 2 nút riêng biệt ===== */
-#custom-grid,
-#custom-launcher {
-    background-color: alpha(@overlay, 0.55);   /* 2 nửa cùng màu → pill liền mạch */
-}
-
-#custom-grid {
-    margin: 5px 0 5px 5px;
-    padding: 0 10px 0 12px;       /* mép trong 10px · mép ngoài 12px */
-    border-radius: 10px 0 0 10px;
-    color: @accent;               /* Grid = accent */
-}
-
-#custom-launcher {
-    margin: 5px 3px 5px -4px;
-    padding: 0 12px 0 10px;       /* mép ngoài 12px · mép trong 10px */
-    border-radius: 0 10px 10px 0;
-    color: @text;                 /* Apps = trung tính */
-    /*border-left: 1px solid alpha(@muted, 0.35);    vạch chia hairline giữa 2 nút */
-}
-
-/* Hover: tint nhẹ phủ đúng nửa đó — pill vẫn liền, nút vẫn rõ */
-#custom-grid:hover,
-#custom-launcher:hover {
-    background-color: alpha(@accent, 0.16);
+#bluetooth.connected {
     color: @accent;
 }
 
-/* Nhấn: tint đậm hơn một nấc */
-#custom-grid:active,
-#custom-launcher:active {
-    background-color: alpha(@accent, 0.3);
-}
-
-/* ===== Battery: mức cảnh báo tăng dần bằng chính accent ===== */
-#battery {
-    color: @text;
-    background-color: alpha(@overlay, 0.55);
-    border-radius: 10px;
-    margin: 5px 3px;
-    padding: 0 10px;
-}
+/* --- Battery: urgency escalates with the accent itself --- */
 #battery.charging,
 #battery.plugged {
     color: @accent;
@@ -235,6 +288,16 @@ tooltip label {
 }
 #battery.critical {
     color: @base;
-    background-color: @accent;   /* đảo màu: pill accent đặc, chữ tối */
+    background-color: @accent;     /* inverted: solid accent pill */
     font-weight: 800;
+}
+
+/* --- Power: solid accent pill (owns its own hover) --- */
+#custom-power {
+    color: @base;
+    background-color: alpha(@accent, 0.90);
+    font-weight: 800;
+}
+#custom-power:hover {
+    background-color: @accent;
 }

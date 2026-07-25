@@ -1,48 +1,40 @@
 /* ~/.config/waybar/style.css */
-/* Rose Pine */
+/* Rose Pine — 1 accent duy nhất: rose */
 
 * {
     /* Đổi tên font dưới đây */
     font-family: "FantasqueSansM Nerd Font", "IosevkaTerm Nerd Font", sans-serif;
-    font-size: 16px; /* Font này tròn nên nên để size 14 cho dễ nhìn hơn */
+    font-size: 16px;
     font-weight: 600;
     min-height: 0;
 }
 
-@define-color base   #191724;
-@define-color mantle #1f1d2e;
-@define-color text   #e0def4;
-@define-color subtext #908caa;
-@define-color surface0 #26233a;
-@define-color surface1 #6e6a86;
-@define-color blue    #9ccfd8;
-@define-color lavender #ebbcba;
-@define-color mauve   #c4a7e7;
-@define-color pink    #eb6f92;
-@define-color red     #eb6f92;
-@define-color peach   #f6c177;
-@define-color yellow  #f6c177;
-@define-color green   #31748f;
-@define-color teal    #9ccfd8;
-@define-color sky     #9ccfd8;
-@define-color rose    #ebbcba;
-@define-color iris    #c4a7e7;
+/* ===== Rose Pine palette ===== */
+@define-color base    #191724;
+@define-color surface #1f1d2e;
+@define-color overlay #26233a;
+@define-color muted   #6e6a86;
+@define-color subtle  #908caa;
+@define-color text    #e0def4;
+@define-color accent  #ebbcba;   /* rose — accent DUY NHẤT */
 
+/* ===== Bar: nền trong suốt ===== */
 window#waybar {
     background: transparent;
 }
 
 window#waybar > box {
-    background-color: alpha(@mantle, 0.8);
+    background-color: alpha(@surface, 0.75);
     border-radius: 14px;
-    border: 2px solid alpha(@surface1, 0.4);
+    border: 2px solid alpha(@muted, 0.3);
     margin: 0;
     padding: 0 8px;
 }
 
+/* ===== Tooltip ===== */
 tooltip {
-    background: @mantle;
-    border: 1px solid @surface1;
+    background: alpha(@surface, 0.95);
+    border: 1px solid alpha(@muted, 0.5);
     border-radius: 10px;
 }
 tooltip label {
@@ -50,7 +42,7 @@ tooltip label {
     padding: 4px;
 }
 
-/* module chung: khoảng cách + pill nền */
+/* ===== Module chung: pill nền trong, chữ trung tính ===== */
 #mpris,
 #custom-weather,
 #clock,
@@ -61,20 +53,30 @@ tooltip label {
 #network,
 #bluetooth,
 #custom-power {
-    background-color: alpha(@surface0, 0.5);
+    background-color: alpha(@overlay, 0.55);
     color: @text;
     border-radius: 10px;
     margin: 5px 3px;
     padding: 0 10px;
 }
 
-/* ---------- TRÁI: workspaces + taskbar ---------- */
+/* hover chung: phủ một lớp accent mỏng */
+#pulseaudio:hover,
+#pulseaudio.microphone:hover,
+#backlight:hover,
+#network:hover,
+#bluetooth:hover,
+#mpris:hover {
+    background-color: alpha(@accent, 0.15);
+}
+
+/* ===== Workspaces (dự phòng nếu sau này thêm vào config) ===== */
 #workspaces {
     padding: 0 4px;
 }
 #workspaces button {
     all: unset;
-    color: @subtext;
+    color: @subtle;
     padding: 0 7px;
     margin: 0 2px;
     border-radius: 8px;
@@ -82,84 +84,64 @@ tooltip label {
 }
 #workspaces button.occupied {
     color: @text;
-    background-color: alpha(@lavender, 0.15);
+    background-color: alpha(@accent, 0.12);
 }
 #workspaces button.focused {
     color: @base;
-    background-color: @lavender;
+    background-color: @accent;
 }
 #workspaces button.urgent {
     color: @base;
-    background-color: @red;
+    background-color: @accent;
 }
 #workspaces button:hover {
-    background-color: alpha(@lavender, 0.35);
+    background-color: alpha(@accent, 0.25);
 }
 
-/* ---------- Taskbar: ẩn hoàn toàn khi không có cửa sổ ---------- */
-/* Container rỗng → không nền, không padding → vô hình */
+/* ===== Taskbar: ẩn khi rỗng, ghép thành 1 pill ===== */
 #taskbar {
     background: none;
     border-radius: 0;
     padding: 0;
     margin: 0;
 }
-
-/* Các app ghép thành 1 pill liền; không có app nào → không vẽ gì */
 #taskbar button {
     all: unset;
-    background-color: alpha(@surface0, 0.5);
-    color: @subtext;
+    background-color: alpha(@overlay, 0.55);
+    color: @subtle;
     border-radius: 0;
     margin: 5px 0;
     padding: 0 10px;
 }
-/* Nút ĐẦU: bo góc trái + margin trái */
 #taskbar button:first-child {
     border-top-left-radius: 10px;
     border-bottom-left-radius: 10px;
     margin-left: 5px;
 }
-/* Nút CUỐI: bo góc phải + margin phải */
 #taskbar button:last-child {
     border-top-right-radius: 10px;
     border-bottom-right-radius: 10px;
     margin-right: 3px;
 }
 #taskbar button.active {
-    color: @text;
-    background-color: alpha(@lavender, 0.25);
+    color: @accent;
+    background-color: alpha(@accent, 0.15);
 }
 #taskbar button:hover {
-    background-color: alpha(@lavender, 0.35);
+    background-color: alpha(@accent, 0.25);
 }
 
-/* ---------- GIỮA ---------- */
-#mpris {
-    color: @green;
-    background-color: alpha(@surface0, 0.5);
-    border-radius: 10px;
-    margin: 5px 3px;
-    padding: 0 10px;
-}
+/* ===== GIỮA ===== */
 #mpris.paused {
-    color: @subtext;
-}
-
-#custom-weather {
-    color: @peach;
-    background-color: alpha(@surface0, 0.5);
-    border-radius: 10px;
-    margin: 5px 3px;
-    padding: 0 10px;
+    color: @subtle;              /* pause → trầm xuống */
 }
 
 #clock {
-    color: @sky;
+    color: @accent;              /* đồng hồ = điểm nhấn trung tâm */
     font-weight: 700;
 }
 
-/* ---------- PHẢI ---------- */
+/* ===== PHẢI ===== */
 #tray {
     padding: 0 8px;
 }
@@ -168,116 +150,83 @@ tooltip label {
 }
 #tray > .needs-attention {
     -gtk-icon-effect: highlight;
-    background-color: alpha(@red, 0.4);
+    background-color: alpha(@accent, 0.3);
     border-radius: 8px;
 }
 
-#pulseaudio {
-    color: @mauve;
-}
 #pulseaudio.muted {
-    color: @subtext;
-}
-#pulseaudio.microphone {
-    color: @pink;
+    color: @subtle;
 }
 #pulseaudio.microphone.source-muted {
-    color: @subtext;
+    color: @subtle;
 }
 
-#backlight {
-    color: @yellow;
-}
-
-#network {
-    color: @blue;
-}
 #network.disconnected,
 #network.disabled {
-    color: @red;
+    color: @subtle;
 }
 
-#bluetooth {
-    color: @sky;
+#bluetooth.connected {
+    color: @accent;              /* có kết nối → accent */
 }
 #bluetooth.off,
 #bluetooth.disabled {
-    color: @subtext;
-}
-#bluetooth.connected {
-    color: @green;
+    color: @subtle;
 }
 
 #custom-power {
     color: @base;
-    background-color: alpha(@red, 0.85);
+    background-color: alpha(@accent, 0.9);   /* pill accent đặc */
     font-weight: 800;
 }
-
-/* hover chung cho các module có thể bấm */
-#pulseaudio:hover,
-#pulseaudio.microphone:hover,
-#backlight:hover,
-#network:hover,
-#bluetooth:hover,
-#mpris:hover,
 #custom-power:hover {
-    background-color: @surface1;
+    background-color: @accent;
 }
 
-
-
-/* ---------- Custom Grid & Launcher (ghép thành 1 pill) ---------- */
+/* ===== Grid & Launcher: 1 pill ghép (giữ nguyên cấu trúc) ===== */
 #custom-grid,
 #custom-launcher {
-    background-color: alpha(@surface0, 0.5);
+    background-color: alpha(@overlay, 0.55);
     padding: 0 10px;
-    /* margin & border-radius khai báo riêng bên dưới */
 }
-
-/* Nút Grid: bo góc trái, mép PHẢI = 0 */
 #custom-grid {
-    margin: 5px 0 5px 5px;          /* trên | phải | dưới | trái */
+    margin: 5px 0 5px 5px;
     border-radius: 10px 0 0 10px;
-    color: @rose;
+    color: @accent;              /* Grid = accent */
 }
-
-/* Nút Apps: bo góc phải, mép TRÁI = 0 */
 #custom-launcher {
     margin: 5px 3px 5px 0;
     border-radius: 0 10px 10px 0;
-    color: @iris;
-    border-left: 1px solid alpha(@surface1, 0.35); /* vạch ngăn cách nhẹ, bỏ nếu thích liền hẳn */
+    color: @text;                /* Apps = trung tính (bỏ iris) */
+    border-left: 1px solid alpha(@muted, 0.4);
 }
-
-/* Hover */
 #custom-grid:hover {
-    background-color: @rose;
+    background-color: @accent;
     color: @base;
 }
 #custom-launcher:hover {
-    background-color: @iris;
-    color: @base;
+    background-color: alpha(@accent, 0.2);
+    color: @text;
 }
 
-
-
+/* ===== Battery: mức cảnh báo tăng dần bằng chính accent ===== */
 #battery {
-    color: @green;
-    background-color: alpha(@surface0, 0.5);
+    color: @text;
+    background-color: alpha(@overlay, 0.55);
     border-radius: 10px;
     margin: 5px 3px;
     padding: 0 10px;
 }
-#battery.charging {
-    color: @yellow;
+#battery.charging,
+#battery.plugged {
+    color: @accent;
 }
 #battery.warning {
-    color: @peach;
+    color: @accent;
+    background-color: alpha(@accent, 0.15);
 }
 #battery.critical {
-    color: @red;
-}
-#battery.plugged {
-    color: @blue;
+    color: @base;
+    background-color: @accent;   /* đảo màu: pill accent đặc, chữ tối */
+    font-weight: 800;
 }

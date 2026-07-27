@@ -131,7 +131,7 @@
         "format-disabled": "󰤯  Disabled",
         "format-icons": ["󰤟", "󰤢", "󰤥", "󰤨"],
         "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n󰇚 {bandwidthDownBits}  󰕒 {bandwidthUpBits}",
-        "on-click": "~/.config/mango/waybar/scripts/wifi-menu.sh",
+        "on-click": "nm-connection-editor",
         "on-click-right": "nm-connection-editor",
         "interval": 5
     },

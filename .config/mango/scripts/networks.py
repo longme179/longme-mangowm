@@ -12,7 +12,7 @@
 #   - A valid icon theme (Adwaita or any desktop icon theme)
 #
 # Usage:
-#   python3 network_overview.py
+#   python3 networks.py
 #
 # Features:
 #   - Device overview (type, state, active connection) with Wi-Fi radio toggle.
@@ -35,11 +35,9 @@
 #   - A second launched instance asks the first one to present itself.
 #
 # UX keys:
-#   - c: Compact density
-#   - l: Large density
-#   - p: Toggle low-power mode (no animations, slower polling, no monitor)
 #   - s: Trigger a Wi-Fi rescan
 #   - F5: Force a state refresh
+#   - ESC: Close
 #
 # =============================================================================
 from __future__ import annotations
@@ -47,13 +45,12 @@ from __future__ import annotations
 import errno
 import fcntl
 import gi
-import json
 import logging
 import os
 import queue
+import re
 import signal
 import socket
-import string
 import subprocess
 import tempfile
 import threading
@@ -76,10 +73,7 @@ logger = logging.getLogger("NetworkOverview")
 # =============================================================================
 POLL_INTERVAL_MS = 4000
 POLL_INTERVAL_NM_DOWN_MS = 7000
-LOW_POWER_POLL_INTERVAL_MS = 8000
-LOW_POWER_POLL_INTERVAL_NM_DOWN_MS = 14000
 SYNC_DEBOUNCE_MS = 160
-SYNC_DEBOUNCE_LOW_POWER_MS = 260
 SYNC_AFTER_ACTION_MS = 260
 SCAN_SETTLE_MS = 1600
 MONITOR_RESTART_DELAY_SECONDS = 2.0
@@ -101,12 +95,18 @@ OWN_PID = os.getpid()
 
 LOCK_FILE_NAME = "network-overview.lock"
 SOCKET_FILE_NAME = "network-overview.sock"
-UI_SETTINGS_FILE_NAME = "network-overview-ui.json"
 IPC_MESSAGE_SHOW = "show"
 IPC_MESSAGE_QUIT = "quit"
 
 FADE_IN_STEP_MS = 16
 FADE_IN_STEPS = 8
+
+# Matches the UUID printed by `nmcli connection add`:
+#   Connection 'Name' (12345678-1234-1234-1234-123456789012) successfully added.
+_UUID_PATTERN = re.compile(
+    r"\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)"
+)
 
 # Security token -> nmcli key management mapping.
 SECURITY_COMBO_LABELS = [
@@ -185,11 +185,11 @@ def key_mgmt_for_security(security: str) -> str:
 
 
 # =============================================================================
-# CSS template
+# CSS
 # =============================================================================
-CSS_TEMPLATE = string.Template("""
+CSS_TEXT = """
 window {
-  background-color: rgba(25, 23, 36, $window_alpha);
+  background-color: rgba(25, 23, 36, 0.95);
 }
 label {
   color: #e0def4;
@@ -199,27 +199,27 @@ label {
 }
 .outer-box {
   background-color: transparent;
-  padding: $outer_padding;
+  padding: 22px;
 }
 .header {
   background-color: rgba(38, 35, 58, 0.55);
   border: 1px solid rgba(110, 106, 134, 0.35);
-  border-radius: $header_radius;
-  padding: $header_padding;
+  border-radius: 16px;
+  padding: 12px 16px;
   margin-bottom: 14px;
 }
 .title-label {
   color: #e0def4;
-  font-size: $title_font;
+  font-size: 18px;
   font-weight: bold;
 }
 .subtitle-label {
   color: #908caa;
-  font-size: $sub_font;
+  font-size: 12px;
 }
 .section-label {
   color: #ebbcba;
-  font-size: $section_font;
+  font-size: 14px;
   font-weight: bold;
   margin: 12px 2px 6px 2px;
 }
@@ -229,40 +229,43 @@ label {
 .row-card {
   background-color: rgba(38, 35, 58, 0.62);
   border: 1px solid #6e6a86;
-  border-radius: $row_radius;
-  padding: $row_padding;
-  margin-bottom: $row_margin;
-  transition: $transition_row;
+  border-radius: 14px;
+  padding: 10px 14px;
+  margin-bottom: 7px;
+  transition: background-color 140ms ease, border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 .row-card:hover {
   border-color: #ebbcba;
   background-color: rgba(235, 188, 186, 0.10);
-  box-shadow: $shadow_hover;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 .row-active {
   border-color: #c4a7e7;
   background-color: rgba(196, 167, 231, 0.14);
-  box-shadow: $shadow_active;
+  box-shadow: 0 0 0 1px rgba(196, 167, 231, 0.45),
+    0 0 18px rgba(196, 167, 231, 0.28),
+    0 6px 18px rgba(0, 0, 0, 0.22);
 }
 .row-title {
   color: #e0def4;
-  font-size: $label_font;
+  font-size: 14px;
   font-weight: 600;
 }
 .sub-label {
   color: #908caa;
-  font-size: $sub_font;
+  font-size: 12px;
 }
 .empty-label {
   color: #6e6a86;
   font-style: italic;
-  font-size: $sub_font;
+  font-size: 12px;
   padding: 6px 10px 10px 10px;
 }
 .badge {
   border-radius: 999px;
   padding: 2px 10px;
-  font-size: $badge_font;
+  font-size: 11px;
   font-weight: bold;
 }
 .badge-connected {
@@ -280,9 +283,10 @@ button {
   background-color: rgba(110, 106, 134, 0.30);
   color: #e0def4;
   border: 1px solid rgba(110, 106, 134, 0.5);
-  border-radius: $btn_radius;
-  padding: $btn_padding;
-  transition: $transition_btn;
+  border-radius: 9px;
+  padding: 5px 12px;
+  transition: background-color 110ms ease, border-color 110ms ease,
+    color 110ms ease;
 }
 button:hover {
   background-color: rgba(235, 188, 186, 0.28);
@@ -379,7 +383,7 @@ scrollbar slider:hover {
 }
 .hint-label {
   color: #908caa;
-  font-size: $hint_font;
+  font-size: 12px;
   margin-top: 12px;
 }
 .hint-error {
@@ -388,7 +392,7 @@ scrollbar slider:hover {
 .hint-ok {
   color: #9ccfd8;
 }
-""")
+"""
 
 # =============================================================================
 # Utilities
@@ -438,7 +442,7 @@ def split_terse(line: str) -> List[str]:
 
 def get_runtime_dir() -> str:
     """
-    Return a per-user runtime directory for lock/socket/settings files.
+    Return a per-user runtime directory for lock/socket files.
     Prefer XDG_RUNTIME_DIR. Fall back to a private directory under /tmp.
     """
     runtime = os.environ.get("XDG_RUNTIME_DIR")
@@ -454,10 +458,6 @@ def get_runtime_dir() -> str:
     return fallback
 
 
-def coerce_bool(value: Any) -> bool:
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-
 def is_instance_or_ancestor(widget: Optional[Gtk.Widget], cls: Any) -> bool:
     """Return True if widget is an instance of cls or a descendant of one."""
     current = widget
@@ -466,65 +466,6 @@ def is_instance_or_ancestor(widget: Optional[Gtk.Widget], cls: Any) -> bool:
             return True
         current = current.get_parent()
     return False
-
-
-# =============================================================================
-# UI settings
-# =============================================================================
-class UiSettings:
-    """
-    Persistent UI settings.
-    density:
-      - "compact"
-      - "large"
-    low_power:
-      - True: disable expensive visual effects and reduce background work.
-    """
-
-    def __init__(self) -> None:
-        self.path = os.path.join(get_runtime_dir(), UI_SETTINGS_FILE_NAME)
-        self.density = "large"
-        self.low_power = False
-        self._load()
-        self._apply_env_overrides()
-
-    def _load(self) -> None:
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return
-        except Exception as exc:
-            logger.debug("Cannot load UI settings: %s", exc)
-            return
-        if not isinstance(data, dict):
-            return
-        density = str(data.get("density", "")).strip().lower()
-        if density in ("compact", "large"):
-            self.density = density
-        self.low_power = bool(data.get("low_power", False))
-
-    def _apply_env_overrides(self) -> None:
-        density = os.environ.get("NETWORK_OVERVIEW_DENSITY", "").strip().lower()
-        if density in ("compact", "large"):
-            self.density = density
-        low_power = os.environ.get("NETWORK_OVERVIEW_LOW_POWER")
-        if low_power is not None:
-            self.low_power = coerce_bool(low_power)
-
-    def save(self) -> None:
-        try:
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "density": self.density,
-                        "low_power": self.low_power,
-                    },
-                    f,
-                    indent=2,
-                )
-        except Exception as exc:
-            logger.debug("Cannot save UI settings: %s", exc)
 
 
 # =============================================================================
@@ -595,12 +536,25 @@ class NmcliBackend:
     # Low-level subprocess helpers
     # -------------------------------------------------------------------------
     @staticmethod
-    def _run(
+    def _nmcli_env() -> Dict[str, str]:
+        """
+        Force the C locale so nmcli output is never localized.
+        This keeps terse field values ("enabled"/"disabled"), error strings
+        and the `connection add` confirmation line reliably parseable.
+        """
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        env["LANG"] = "C"
+        env.pop("LANGUAGE", None)
+        return env
+
+    @staticmethod
+    def _run_full(
         args: List[str],
         timeout: float = NMCLI_TIMEOUT,
         log_errors: bool = True,
-    ) -> Optional[str]:
-        """Run `nmcli <args>` and return stdout, or None on any error."""
+    ) -> Tuple[bool, str, str]:
+        """Run `nmcli <args>` and return (success, stdout, error_message)."""
         cmd_str = " ".join(args)
         try:
             proc = subprocess.run(
@@ -609,6 +563,7 @@ class NmcliBackend:
                 text=True,
                 timeout=timeout,
                 check=False,
+                env=NmcliBackend._nmcli_env(),
             )
         except FileNotFoundError:
             if log_errors:
@@ -618,7 +573,7 @@ class NmcliBackend:
                     "Cannot find `nmcli`. Make sure NetworkManager is installed "
                     "and `nmcli` is in PATH.",
                 )
-            return None
+            return False, "", "`nmcli` not found in PATH"
         except subprocess.TimeoutExpired:
             if log_errors:
                 log_throttled(
@@ -628,7 +583,7 @@ class NmcliBackend:
                     cmd_str,
                     timeout,
                 )
-            return None
+            return False, "", f"nmcli timed out after {timeout:.0f}s"
         except Exception as exc:
             if log_errors:
                 log_throttled(
@@ -638,44 +593,11 @@ class NmcliBackend:
                     cmd_str,
                     exc,
                 )
-            return None
-        if proc.returncode != 0:
-            if log_errors:
-                detail = (proc.stderr or proc.stdout or "").strip()
-                log_throttled(
-                    logging.WARNING,
-                    f"rc:nmcli {cmd_str}:{detail[:100]}",
-                    "`nmcli %s` returned error: %s",
-                    cmd_str,
-                    detail or f"returncode={proc.returncode}",
-                )
-            return None
-        return proc.stdout
+            return False, "", str(exc)
 
-    @staticmethod
-    def _run_result(
-        args: List[str],
-        timeout: float = NMCLI_TIMEOUT,
-        log_errors: bool = True,
-    ) -> Tuple[bool, str]:
-        """Run `nmcli <args>` and return (success, error_message)."""
-        cmd_str = " ".join(args)
-        try:
-            proc = subprocess.run(
-                ["nmcli"] + args,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        except FileNotFoundError:
-            return False, "`nmcli` not found in PATH"
-        except subprocess.TimeoutExpired:
-            return False, f"nmcli timed out after {timeout:.0f}s"
-        except Exception as exc:
-            return False, str(exc)
+        stdout = proc.stdout or ""
         if proc.returncode != 0:
-            lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+            lines = (proc.stderr or stdout).strip().splitlines()
             msg = lines[0].strip() if lines else f"nmcli exited with code {proc.returncode}"
             if msg.lower().startswith("error:"):
                 msg = msg[6:].strip()
@@ -687,8 +609,32 @@ class NmcliBackend:
                     cmd_str,
                     msg,
                 )
-            return False, msg
-        return True, ""
+            return False, stdout, msg
+        return True, stdout, ""
+
+    @staticmethod
+    def _run(
+        args: List[str],
+        timeout: float = NMCLI_TIMEOUT,
+        log_errors: bool = True,
+    ) -> Optional[str]:
+        """Run `nmcli <args>` and return stdout, or None on any error."""
+        ok, out, _err = NmcliBackend._run_full(
+            args, timeout=timeout, log_errors=log_errors
+        )
+        return out if ok else None
+
+    @staticmethod
+    def _run_result(
+        args: List[str],
+        timeout: float = NMCLI_TIMEOUT,
+        log_errors: bool = True,
+    ) -> Tuple[bool, str]:
+        """Run `nmcli <args>` and return (success, error_message)."""
+        ok, _out, err = NmcliBackend._run_full(
+            args, timeout=timeout, log_errors=log_errors
+        )
+        return ok, err
 
     @staticmethod
     def _terse(
@@ -706,6 +652,18 @@ class NmcliBackend:
                 continue
             rows.append(split_terse(line))
         return rows
+
+    @staticmethod
+    def _parse_added_uuid(output: str) -> Optional[str]:
+        """
+        Extract the new profile UUID from `nmcli connection add` output:
+            Connection 'Name' (12345678-...) successfully added.
+        This is the authoritative source for the UUID of a freshly created
+        profile; re-querying by name is unreliable because nmcli renames
+        profiles on name collisions (e.g. "MyWifi 1").
+        """
+        match = _UUID_PATTERN.search(output or "")
+        return match.group(1) if match else None
 
     @staticmethod
     def _write_passwd_file(entries: List[str]) -> str:
@@ -1063,17 +1021,19 @@ class NmcliBackend:
 
     @staticmethod
     def add_wireguard(fields: Dict[str, str]) -> Tuple[bool, str]:
-        ok, err = NmcliBackend._run_result(
+        ok, out, err = NmcliBackend._run_full(
             ["connection", "add", "type", "wireguard",
              "con-name", fields["name"], "save", "yes", "autoconnect", "no"]
         )
         if not ok:
-            return ok, err
-        uuid: Optional[str] = None
-        for p in NmcliBackend.get_profiles():
-            if p.name == fields["name"] and "wireguard" in p.ctype.lower():
-                uuid = p.uuid
-                break
+            return False, err
+        # Authoritative UUID from nmcli output; profile lookup only as fallback.
+        uuid = NmcliBackend._parse_added_uuid(out)
+        if not uuid:
+            for p in NmcliBackend.get_profiles():
+                if p.name == fields["name"] and "wireguard" in p.ctype.lower():
+                    uuid = p.uuid
+                    break
         if not uuid:
             return False, "Profile was created but could not be located."
         pairs = [
@@ -1120,33 +1080,47 @@ class NmcliBackend:
             ]
             if hidden:
                 args += ["802-11-wireless.hidden", "yes"]
-            ok, err = NmcliBackend._run_result(args)
+            ok, out, err = NmcliBackend._run_full(args)
             if not ok:
                 return False, err
-            for p in NmcliBackend.get_profiles():
-                if p.name == ssid and "wireless" in p.ctype.lower():
-                    created = p.uuid
-                    break
+            # Authoritative UUID straight from the nmcli confirmation line.
+            # Re-querying by name is unreliable: nmcli silently renames the
+            # new profile on name collisions (e.g. "MyWifi 1"), which used to
+            # produce "Profile was created but could not be located."
+            created = NmcliBackend._parse_added_uuid(out)
+            if not created:
+                # Fallback: match by SSID first, then by profile name.
+                for p in NmcliBackend.get_profiles():
+                    if "wireless" not in p.ctype.lower():
+                        continue
+                    if p.ssid == ssid or p.name == ssid:
+                        created = p.uuid
+                        break
             if not created:
                 return False, "Profile was created but could not be located."
             uuid = created
-            if key_mgmt:
-                pairs = ["802-11-wireless-security.key-mgmt", key_mgmt]
-                if key_mgmt == "wpa-eap":
-                    pairs += [
-                        "802-1x.eap", "peap",
-                        "802-1x.phase2-auth", "mschapv2",
-                    ]
-                    if identity:
-                        pairs += ["802-1x.identity", identity]
-                ok, err = NmcliBackend._run_result(
-                    ["connection", "modify", "uuid", uuid] + pairs
-                )
-                if not ok:
+
+        # Make sure the security method matches the network before handing
+        # over any secret. This is idempotent for correctly configured
+        # profiles and repairs profiles that are missing key-mgmt.
+        if key_mgmt:
+            pairs = ["802-11-wireless-security.key-mgmt", key_mgmt]
+            if key_mgmt == "wpa-eap":
+                pairs += [
+                    "802-1x.eap", "peap",
+                    "802-1x.phase2-auth", "mschapv2",
+                ]
+                if identity:
+                    pairs += ["802-1x.identity", identity]
+            ok, err = NmcliBackend._run_result(
+                ["connection", "modify", "uuid", uuid] + pairs
+            )
+            if not ok:
+                if created:
                     NmcliBackend._run_result(
                         ["connection", "delete", "uuid", uuid], log_errors=False
                     )
-                    return False, err
+                return False, err
 
         entries: Optional[List[str]] = None
         if password:
@@ -1238,6 +1212,7 @@ class NmcliMonitorWorker(threading.Thread):
                         stderr=subprocess.DEVNULL,
                         text=True,
                         bufsize=1,
+                        env=NmcliBackend._nmcli_env(),
                     )
                     proc = self._proc
                 if proc is None or proc.stdout is None:
@@ -1970,20 +1945,6 @@ def confirm_yes_no(parent: Gtk.Window, title: str, text: str) -> bool:
     return response == Gtk.ResponseType.YES
 
 
-def choose_open_file(parent: Gtk.Window, title: str) -> Optional[str]:
-    dlg = Gtk.FileChooserDialog(
-        title=title,
-        transient_for=parent,
-        action=Gtk.FileChooserAction.OPEN,
-    )
-    dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
-    dlg.add_button("Open", Gtk.ResponseType.OK)
-    response = dlg.run()
-    path = dlg.get_filename() if response == Gtk.ResponseType.OK else None
-    dlg.destroy()
-    return path
-
-
 def choose_save_file(parent: Gtk.Window, title: str, default_name: str) -> Optional[str]:
     dlg = Gtk.FileChooserDialog(
         title=title,
@@ -2049,9 +2010,6 @@ class DeviceRow(Gtk.EventBox):
         if self.device != new_device:
             self.device = new_device
             self._render()
-
-    def apply_metrics(self) -> None:
-        self._render()
 
 
 class AccessPointRow(Gtk.EventBox):
@@ -2135,18 +2093,14 @@ class AccessPointRow(Gtk.EventBox):
             self.badge.set_visible(False)
             self.connect_btn.set_visible(True)
 
-        if not self.main_window.settings.low_power:
-            self.set_tooltip_text(
-                f"Signal {self.ap.signal}% \u2022 {self.ap.security or 'Open'}"
-            )
+        self.set_tooltip_text(
+            f"Signal {self.ap.signal}% \u2022 {self.ap.security or 'Open'}"
+        )
 
     def update(self, new_ap: AccessPoint) -> None:
         if self.ap != new_ap:
             self.ap = new_ap
             self._render()
-
-    def apply_metrics(self) -> None:
-        self._render()
 
     def _on_connect_clicked(self, _btn: Gtk.Button) -> None:
         self.main_window.connect_to_ap(self.ap)
@@ -2260,16 +2214,12 @@ class ConnectionRow(Gtk.EventBox):
         self.auto_switch.set_active(p.autoconnect)
         self.auto_switch.handler_unblock(self._auto_hid)
 
-        if not self.main_window.settings.low_power:
-            self.set_tooltip_text(f"{p.name} \u2022 {p.uuid}")
+        self.set_tooltip_text(f"{p.name} \u2022 {p.uuid}")
 
     def update(self, new_profile: ConnectionProfile) -> None:
         if self.profile != new_profile:
             self.profile = new_profile
             self._render()
-
-    def apply_metrics(self) -> None:
-        self._render()
 
     # -------------------------------------------------------------------------
     # Events
@@ -2377,7 +2327,6 @@ class NetworkOverview(Gtk.Window):
     def __init__(self, single_instance: SingleInstance) -> None:
         super().__init__(title=WINDOW_TITLE)
         self.single_instance = single_instance
-        self.settings = UiSettings()
 
         self.set_decorated(False)
         self.set_resizable(True)
@@ -2401,8 +2350,8 @@ class NetworkOverview(Gtk.Window):
         self._search_text = ""
         self._type_filter = "All"
 
-        # UI metrics, updated by settings/DPI.
-        self.icon_pixel_size = 24
+        # UI metrics (DPI-aware, computed once).
+        self.icon_pixel_size = self._compute_icon_pixel_size()
 
         self.icon_provider = IconProvider()
         self._ipc_worker = IPCWorker()
@@ -2413,7 +2362,6 @@ class NetworkOverview(Gtk.Window):
         self.ap_rows: Dict[str, AccessPointRow] = {}
         self.conn_rows: Dict[str, ConnectionRow] = {}
 
-        self._update_metrics()
         self._setup_window_backend()
         self._load_css_provider()
         self._setup_ui()
@@ -2430,24 +2378,15 @@ class NetworkOverview(Gtk.Window):
         self.request_sync(immediate=True)
         self._schedule_poll(self._current_poll_interval())
 
-        # Fade-in animation, disabled in low-power mode.
-        if self.settings.low_power:
-            self.set_opacity(1.0)
-        else:
-            self.set_opacity(0.0)
-            self._fade_source = GLib.timeout_add(FADE_IN_STEP_MS, self._fade_in_step)
+        # Fade-in animation.
+        self.set_opacity(0.0)
+        self._fade_source = GLib.timeout_add(FADE_IN_STEP_MS, self._fade_in_step)
 
     # -------------------------------------------------------------------------
-    # Settings / metrics / CSS
+    # Metrics / CSS
     # -------------------------------------------------------------------------
-    def _update_metrics(self) -> None:
-        self.icon_pixel_size = self._compute_icon_pixel_size()
-
     def _compute_icon_pixel_size(self) -> int:
-        """Compute icon pixel size from density and DPI."""
-        compact = self.settings.density == "compact"
-        low_power = self.settings.low_power
-        base = 16 if compact else (20 if low_power else 22)
+        """Compute icon pixel size from DPI for a natural physical size."""
         dpi = 96.0
         screen = self.get_screen()
         if screen is None:
@@ -2460,7 +2399,7 @@ class NetworkOverview(Gtk.Window):
             except Exception:
                 dpi = 96.0
         scale = max(1.0, min(2.0, dpi / 96.0))
-        size = int(base * scale)
+        size = int(22 * scale)
         return max(16, min(48, size))
 
     def _load_css_provider(self) -> None:
@@ -2468,79 +2407,9 @@ class NetworkOverview(Gtk.Window):
         if screen is None:
             logger.error("Cannot get default Gdk.Screen; skipping CSS.")
             return
-        compact = self.settings.density == "compact"
-        low_power = self.settings.low_power
-
-        if low_power:
-            transition_row = "none"
-            transition_btn = "none"
-            shadow_hover = "none"
-            shadow_active = "none"
-        else:
-            transition_row = (
-                "background-color 140ms ease, border-color 140ms ease, "
-                "box-shadow 140ms ease"
-            )
-            transition_btn = (
-                "background-color 110ms ease, border-color 110ms ease, "
-                "color 110ms ease"
-            )
-            shadow_hover = "0 2px 10px rgba(0, 0, 0, 0.25)"
-            shadow_active = (
-                "0 0 0 1px rgba(196, 167, 231, 0.45), "
-                "0 0 18px rgba(196, 167, 231, 0.28), "
-                "0 6px 18px rgba(0, 0, 0, 0.22)"
-            )
-
-        if compact:
-            css_vars = {
-                "window_alpha": "0.97",
-                "outer_padding": "14px",
-                "header_radius": "12px",
-                "header_padding": "8px 12px",
-                "row_radius": "10px",
-                "row_padding": "7px 10px",
-                "row_margin": "4px",
-                "title_font": "15px",
-                "section_font": "13px",
-                "label_font": "13px",
-                "sub_font": "11px",
-                "hint_font": "11px",
-                "badge_font": "10px",
-                "btn_radius": "7px",
-                "btn_padding": "3px 8px",
-            }
-        else:
-            css_vars = {
-                "window_alpha": "0.95",
-                "outer_padding": "22px",
-                "header_radius": "16px",
-                "header_padding": "12px 16px",
-                "row_radius": "14px",
-                "row_padding": "10px 14px",
-                "row_margin": "7px",
-                "title_font": "18px",
-                "section_font": "14px",
-                "label_font": "14px",
-                "sub_font": "12px",
-                "hint_font": "12px",
-                "badge_font": "11px",
-                "btn_radius": "9px",
-                "btn_padding": "5px 12px",
-            }
-        css_vars.update(
-            {
-                "transition_row": transition_row,
-                "transition_btn": transition_btn,
-                "shadow_hover": shadow_hover,
-                "shadow_active": shadow_active,
-            }
-        )
-
-        css = CSS_TEMPLATE.substitute(css_vars)
         provider = Gtk.CssProvider()
         try:
-            provider.load_from_data(css.encode("utf-8"))
+            provider.load_from_data(CSS_TEXT.encode("utf-8"))
         except Exception as exc:
             logger.error("Cannot load CSS: %s", exc)
             return
@@ -2556,41 +2425,6 @@ class NetworkOverview(Gtk.Window):
             self._css_provider = provider
         except Exception as exc:
             logger.error("Cannot add CSS provider: %s", exc)
-
-    def _apply_settings(self, restart_monitor: bool = False) -> None:
-        if self._closed:
-            return
-        self._update_metrics()
-        self._load_css_provider()
-        for rows in (self.device_rows, self.ap_rows, self.conn_rows):
-            for row in rows.values():
-                row.apply_metrics()
-        self.density_btn.set_label(f"Density: {self.settings.density.capitalize()}")
-        self.power_btn.set_label(
-            "Low-power: On" if self.settings.low_power else "Low-power: Off"
-        )
-        if restart_monitor:
-            self._stop_monitor_worker()
-            self._start_monitor_worker()
-        self._schedule_poll(self._current_poll_interval())
-        self._update_hint()
-
-    def set_density(self, density: str) -> None:
-        density = density.strip().lower()
-        if density not in ("compact", "large") or self.settings.density == density:
-            return
-        if self._pending_mutations > 0:
-            return
-        self.settings.density = density
-        self.settings.save()
-        self._apply_settings(restart_monitor=False)
-
-    def toggle_low_power(self) -> None:
-        if self._pending_mutations > 0:
-            return
-        self.settings.low_power = not self.settings.low_power
-        self.settings.save()
-        self._apply_settings(restart_monitor=True)
 
     # -------------------------------------------------------------------------
     # Setup
@@ -2711,20 +2545,6 @@ class NetworkOverview(Gtk.Window):
         self.scan_btn.connect("clicked", lambda _b: self.scan_now())
         box.pack_start(self.scan_btn, False, False, 0)
 
-        self.density_btn = Gtk.Button(
-            label=f"Density: {self.settings.density.capitalize()}"
-        )
-        self.density_btn.set_tooltip_text("Toggle density (C / L)")
-        self.density_btn.connect("clicked", self._on_density_clicked)
-        box.pack_start(self.density_btn, False, False, 0)
-
-        self.power_btn = Gtk.Button(
-            label="Low-power: On" if self.settings.low_power else "Low-power: Off"
-        )
-        self.power_btn.set_tooltip_text("Toggle low-power mode (P)")
-        self.power_btn.connect("clicked", lambda _b: self.toggle_low_power())
-        box.pack_start(self.power_btn, False, False, 0)
-
         close_btn = Gtk.Button()
         close_icon = Gtk.Image()
         close_icon.set_from_icon_name(
@@ -2824,9 +2644,7 @@ class NetworkOverview(Gtk.Window):
             logger.error("Cannot watch single-instance socket: %s", exc)
 
     def _start_monitor_worker(self) -> None:
-        if self._closed or self.settings.low_power:
-            return
-        if self._monitor_worker is not None:
+        if self._closed or self._monitor_worker is not None:
             return
         worker = NmcliMonitorWorker(self._notify_monitor_event)
         worker.start()
@@ -2950,12 +2768,7 @@ class NetworkOverview(Gtk.Window):
     def _on_monitor_event(self) -> bool:
         if self._closed:
             return False
-        delay = (
-            SYNC_DEBOUNCE_LOW_POWER_MS
-            if self.settings.low_power
-            else SYNC_DEBOUNCE_MS
-        )
-        self.request_sync(delay_ms=delay)
+        self.request_sync(delay_ms=SYNC_DEBOUNCE_MS)
         return False
 
     # -------------------------------------------------------------------------
@@ -3005,17 +2818,7 @@ class NetworkOverview(Gtk.Window):
     # Polling & sync
     # -------------------------------------------------------------------------
     def _current_poll_interval(self) -> int:
-        if self.nm_available:
-            return (
-                LOW_POWER_POLL_INTERVAL_MS
-                if self.settings.low_power
-                else POLL_INTERVAL_MS
-            )
-        return (
-            LOW_POWER_POLL_INTERVAL_NM_DOWN_MS
-            if self.settings.low_power
-            else POLL_INTERVAL_NM_DOWN_MS
-        )
+        return POLL_INTERVAL_MS if self.nm_available else POLL_INTERVAL_NM_DOWN_MS
 
     def _schedule_poll(self, interval_ms: int) -> None:
         if self._closed:
@@ -3044,11 +2847,7 @@ class NetworkOverview(Gtk.Window):
         if self._closed:
             return
         if delay_ms is None:
-            delay_ms = (
-                SYNC_DEBOUNCE_LOW_POWER_MS
-                if self.settings.low_power
-                else SYNC_DEBOUNCE_MS
-            )
+            delay_ms = SYNC_DEBOUNCE_MS
         if self._sync_source:
             try:
                 GLib.source_remove(self._sync_source)
@@ -3231,16 +3030,10 @@ class NetworkOverview(Gtk.Window):
             )
             ctx.add_class("hint-error")
         else:
-            actions = (
+            text = (
                 "Click a network to connect \u2022 Right-click a connection for "
-                "more actions"
+                "more actions \u2022 Keys: S scan \u00b7 F5 refresh \u00b7 ESC close"
             )
-            mode = (
-                f"Density: {self.settings.density.capitalize()} \u2022 "
-                f"Performance: {'Low-power' if self.settings.low_power else 'Normal'} \u2022 "
-                "Keys: C compact \u00b7 L large \u00b7 P performance \u00b7 S scan \u00b7 ESC close"
-            )
-            text = f"{actions}\n{mode}"
         self.hint_label.set_text(text)
 
     def flash_status(self, text: str, ok: bool = True) -> None:
@@ -3270,9 +3063,6 @@ class NetworkOverview(Gtk.Window):
     def _on_type_changed(self, combo: Gtk.ComboBoxText) -> None:
         self._type_filter = combo.get_active_text() or "All"
         self.request_sync(delay_ms=120)
-
-    def _on_density_clicked(self, _btn: Gtk.Button) -> None:
-        self.set_density("compact" if self.settings.density == "large" else "large")
 
     def _on_wifi_switch(self, _switch: Gtk.Switch, active: bool) -> bool:
         self._run_task(
@@ -3332,10 +3122,13 @@ class NetworkOverview(Gtk.Window):
     # User actions
     # -------------------------------------------------------------------------
     def _find_wifi_profile(self, ssid: str) -> Optional[ConnectionProfile]:
+        """Find an existing Wi-Fi profile by SSID, falling back to name."""
         if self._last_state is None or not ssid:
             return None
         for p in self._last_state.profiles:
-            if "wireless" in p.ctype.lower() and p.ssid == ssid:
+            if "wireless" not in p.ctype.lower():
+                continue
+            if p.ssid == ssid or p.name == ssid:
                 return p
         return None
 
@@ -3698,15 +3491,6 @@ class NetworkOverview(Gtk.Window):
             | Gdk.ModifierType.SUPER_MASK
         ):
             return False
-        if key == Gdk.KEY_c:
-            self.set_density("compact")
-            return True
-        if key == Gdk.KEY_l:
-            self.set_density("large")
-            return True
-        if key == Gdk.KEY_p:
-            self.toggle_low_power()
-            return True
         if key == Gdk.KEY_s:
             self.scan_now()
             return True

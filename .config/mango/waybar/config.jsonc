@@ -125,7 +125,7 @@
         "tooltip-format": "Brightness: {percent}%\nR-Click: Toggle night mode"
     },
     "network": {
-        "format-wifi": "{icon}  Wireless",
+        "format-wifi": "{icon}  Online",
         "format-ethernet": "󰈀  Wired",
         "format-disconnected": "󰤭  Offline",
         "format-disabled": "󰤯  Disabled",
@@ -136,11 +136,11 @@
         "interval": 5
     },
     "bluetooth": {
-        "format": "󰂯",
-        "format-connected": "󰂱 Connected",
+        "format": "󰂯 IDLE",
+        "format-connected": "󰂱 ON",
         "format-connected-battery": "󰂱 Battery:{device_battery_percentage}%",
-        "format-off": "󰂲",
-        "format-disabled": "󰂲",
+        "format-off": "󰂲 OFF",
+        "format-disabled": "󰂲 OFF",
         "tooltip-format": "{controller_alias}\t{controller_address}",
         "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
         "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",

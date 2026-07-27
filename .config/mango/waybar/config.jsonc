@@ -130,7 +130,7 @@
         "format-disconnected": "󰤭  Offline",
         "format-disabled": "󰤯  Disabled",
         "format-icons": ["󰤟", "󰤢", "󰤥", "󰤨"],
-        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n󰇚 {bandwidthDownBits}  󰕒 {bandwidthUpBits}",
+        "tooltip-format": "{essid}\n{ifname}: {ipaddr}/{cidr}\n󰇚 {bandwidthDownBits}  󰕒 {bandwidthUpBits}",
         "on-click": "~/.config/mango/scripts/networks.py",
         "on-click-right": "nm-connection-editor",
         "interval": 5

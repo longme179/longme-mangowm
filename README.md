@@ -1,80 +1,102 @@
+# MangoWM Rice — Minimal, Themed Wayland Desktop Configuration
 
-# 🌸 Longme's MangoWM Dotfiles
+A focused, modular Linux "rice" built around MangoWM (Wayland window manager) and a curated set of Wayland-friendly tools. Designed for people who want a lightweight, visually consistent desktop with polished defaults, easy theming, and utilities configured for productivity.
 
-A minimal, aesthetic, and usability-focused Wayland desktop configuration tailored specifically for **MangoWM**. Inspired by end4's dots but optimized to work seamlessly with MangoWM's unique API. The entire system utilizes the **Rose Pine** color palette for a soft, consistent, and eye-friendly experience.
+Key goals
+- Minimal and modular: copy or symlink only what you need from .config
+- Theme-first: cohesive color/typography across Waybar, Kitty, GTK, and shell
+- Practical defaults: multi-monitor support, sensible keybindings, autostart helpers
+- Reproducible: wallpapers and assets are included so you can reproduce the look quickly
 
-![WM](https://img.shields.io/badge/WM-MangoWM-blue)
-![Bar](https://img.shields.io/badge/Bar-Waybar-orange)
-![OS](https://img.shields.io/badge/OS-Arch%20Linux-success)
+Features
+- MangoWM configuration
+  - Main configs: bind.conf, config.conf, rule.conf — full keybindings, window rules, and behaviors
+  - Autostart script to launch background services and apps on login
+  - Monitor-aware settings (monitor.conf) and tag/workspace definitions (tag.conf)
+- Waybar status bar
+  - Complete Waybar config plus modular includes, scripts, and CSS themes
+  - Rose-pine / Moon-inspired theme (CSS files included)
+  - Small helper scripts (auto-reload, module scripts) for dynamic content
+- Terminal environment
+  - Kitty terminal configuration with useful helper scripts (search, scroll markers)
+  - Starship prompt (starship.toml) preconfigured for a compact, informative prompt
+- Shell and utilities
+  - Fish shell configuration and recommended tooling
+  - btop, cava, fastfetch configurations for terminal monitoring and system info
+  - MPV config, micro/zed editor settings, and other small app configs
+- Input, UI and multimedia tweaks
+  - fcitx5 (IME) configs for multilingual input
+  - GTK 3/4 rc and Kvantum hints for GTK/QT style coherence
+  - Spicetify directory for Spotify theming (when using spicetify)
+- Wallpapers
+  - High-resolution wallpapers included to reproduce the visual style quickly
+- Small tools and scripts
+  - Wallpaper management helpers, Waybar reload scripts, logout helper templates (wlogout)
+  - Utility scripts under .config/scripts for common tasks
 
+What’s included (top-level highlights)
+- .config/mango/ — MangoWM configs: bind.conf, config.conf, rule.conf, autostart.sh, monitor/tag files
+- .config/waybar/ — Waybar config, CSS themes, scripts, and modules
+- .config/kitty/ — kitty.conf and helper Python scripts (search.py, scroll_mark.py)
+- .config/starship.toml — starship prompt configuration
+- .config/fish, .config/fcitx5, .config/mpv, .config/btop, .config/cava, etc.
+- Wallpapers/ — bundled wallpapers used by the rice
 
+Quick install (one-shot)
+1. Clone the repo:
+   git clone https://github.com/longme179/longme-mangowm.git
+   cd longme-mangowm
 
-## 🛠️ Dependencies
+2. Backup your existing configs:
+   mv ~/.config ~/.config.backup.$(date +%s)
 
-To get the most out of this setup, ensure you have the following packages installed:
+3. Deploy the configs (recommended: use rsync so existing files are preserved if needed):
+   rsync -av --progress .config/ ~/.config/
 
-```bash
-# Window Manager & Core
-mangowm mmsg waybar fuzzel swaync wlogout swaybg
+4. Deploy wallpapers:
+   mkdir -p ~/Pictures/Wallpapers
+   rsync -av Wallpapers/ ~/Pictures/Wallpapers/
 
-# Terminal & Shell
-kitty fish starship
+5. Make scripts executable and run autostart (optional):
+   chmod +x ~/.config/mango/autostart.sh
+   ~/.config/mango/autostart.sh
 
-# App Utilities
-rofi dolphin zed micro gowall btop fastfetch cava
+6. Install or enable the required programs (examples — use your package manager):
+   - MangoWM (or your preferred Wayland WM compatible with these configs)
+   - sway/wayland compositor + wlroots (if using Sway instead of Mango)
+   - waybar
+   - kitty
+   - starship
+   - fish / bash
+   - mpv, fcitx5, btop, cava
+   - spicetify (optional)
+   Ensure your compositor is set up to source the MangoWM config, or adapt the included files to your compositor.
 
-# Python & Libraries (for Grid Overview)
-python python-gobject gtk3 gtk-layer-shell
+Notes on customization
+- Theme colors: edit the Waybar CSS files (.config/waybar/*.css) and the starship.toml for prompt colors.
+- Keybindings & behaviors: update .config/mango/bind.conf and rule.conf for window rules and workspace mapping.
+- Waybar modules: add or remove modules in .config/waybar/config and place helper scripts in .config/waybar/scripts.
+- Terminal: tune Kitty settings in .config/kitty/kitty.conf and use the included Python helpers to extend behavior.
 
-# System Utilities
-inotify-tools ydotool brightnessctl pamixer
-```
+Troubleshooting
+- If Waybar doesn’t show: check compositor logs and run waybar from a TTY to see errors.
+- Missing fonts or icons: install recommended nerd fonts or the fonts referenced by your GTK/Kitty configs.
+- Autostart not running: confirm autostart.sh is executable and your session sources it (or integrate with MangoWM session startup).
+- If a module script fails, run it manually to see stderr and fix dependencies (jq, curl, python, etc).
 
-## ⌨️ Keybinds
+Security & license
+- No LICENSE file is included in this repository. Before reusing or redistributing, confirm licensing with the repository owner.
+- Some scripts may call external commands — inspect them before running.
 
-| Keybind | Action |
-| :--- | :--- |
-| `Super + Tab` | Open Workspace Grid (Drag & Drop apps) |
-| `Super + [1-10]` | Switch to Workspace |
-| `Super + Alt + [1-10]` | Move active window to Workspace |
-| `Alt + Space` | Open App Launcher (Fuzzel) |
-| `Alt + Return` | Open Terminal (Kitty) |
-| `Super + Q` | Kill active window |
-| `Super + M` | Quit MangoWM |
+Contributing
+- Open an issue or PR for bugfixes, improvements, or new module configs.
+- Keep changes modular: prefer adding optional modules/scripts rather than changing core behavior.
 
-## 🚀 Installation
+Acknowledgements
+- Theme inspiration: Rose Pine and Moon palettes
+- Uses upstream applications: MangoWM, Waybar, Kitty, Starship, Fish, MPV, btop, cava
 
-This dotfiles setup uses the **Git Bare Repository** method. To install on a fresh machine:
-
-1. Clone the repo into a bare directory:
-   ```bash
-   git clone --bare https://github.com/longme179/longme-mangowm.git $HOME/.cfg
-   ```
-2. Define the alias temporarily in your shell:
-   ```bash
-   alias config='/usr/bin/git --git-dir=$HOME/.cfg/ --work-tree=$HOME'
-   ```
-3. Checkout the actual files:
-   ```bash
-   config checkout
-   ```
-   *(If you get an error about existing files, backup your old `~/.config` folder and run the command again).*
-4. Hide untracked files:
-   ```bash
-   config config --local status.showUntrackedFiles no
-   ```
-
-## 📂 Structure
-
-Only essential configurations are backed up:
-- `~/.config/mango/` - WM configs, keybinds, rules, and custom scripts (`grid.py`, `dotfiles_backup.sh`).
-- `~/.config/waybar/` - Bar modules and Rose Pine styling.
-- `~/.config/fuzzel/` & `~/.config/swaync/` - App launcher & Notification center.
-- `~/.config/fish/` & `~/.config/kitty/` - Terminal environment.
-- `~/Wallpapers/` - Wallpaper collection.
-
-## 🙏 Credits
-
-- [MangoWM](https://github.com/mangowm) - An excellent Wayland window manager.
-- [Rose Pine](https://rosepinetheme.com/) - The beautiful pastel color palette.
-- [end4](https://github.com/end-4/dots-hyprland) - Inspiration for the grid UI and overall usability design.
+If you want, I can:
+- Add this README to the repository as README.md,
+- Generate an INSTALL script to automate the steps above, or
+- Produce a minimal list of required packages per distribution (Arch, Debian/Ubuntu, Fedora).

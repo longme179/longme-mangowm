@@ -12,15 +12,15 @@
 #
 # DEPENDENCIES (Arch / CachyOS package names)
 #   Required:
-#     - networkmanager   # provides nmcli + the NetworkManager daemon
-#     - fuzzel           # Wayland-native dmenu / launcher
+#     - networkmanager         # provides nmcli + the NetworkManager daemon
+#     - fuzzel                 # Wayland-native dmenu / launcher
 #   Recommended:
-#     - libnotify        # notify-send (desktop notifications)
-#     - jq               # only needed if you hack on JSON parsing
-#     - ttf-nerd-fonts-symbols  # for crisp icon glyphs (optional)
+#     - libnotify              # notify-send (desktop notifications)
+#     - jq                     # only needed if you hack on JSON parsing
+#     - ttf-nerd-fonts-symbols # crisp 1-cell icon glyphs (recommended)
 #
 #   Install everything with:
-#       sudo pacman -S --needed networkmanager fuzzel libnotify jq
+#       sudo pacman -S --needed networkmanager fuzzel libnotify jq ttf-nerd-fonts-symbols
 #
 # RECOMMENDED KEYBIND (mangowm)
 #   In your mangowm config:
@@ -59,32 +59,42 @@ set -euo pipefail
 # Configuration & constants
 # -----------------------------------------------------------------------------
 readonly SCRIPT_NAME="wifi-manager"
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 
 # Override via env if desired
-FUZZEL_LINES="${FUZZEL_LINES:-20}"
-FUZZEL_WIDTH="${FUZZEL_WIDTH:-70}"
+FUZZEL_LINES="${FUZZEL_LINES:-22}"
+FUZZEL_WIDTH="${FUZZEL_WIDTH:-72}"
 FUZZEL_FONT="${FUZZEL_FONT:-}"               # e.g. "JetBrainsMono Nerd Font:size=11"
 
-# Icons — simple Unicode glyphs that render in any font (incl. Nerd Fonts).
-# Override via env to customise (e.g. plain text for minimal setups).
-ICON_WIFI="${ICON_WIFI:-}"
+# Column widths (in characters) for tabular displays
+readonly COL_SSID=24          # max SSID width in scan list
+readonly COL_LABEL=12         # label column in status block
+readonly COL_NAME=28          # connection name in saved list
+
+# Icons — Nerd Font PUA glyphs + Unicode symbols, all 1-cell wide so that
+# labels align perfectly in any monospace font. Override via env if desired.
+ICON_WIFI="${ICON_WIFI:-}"
 ICON_WIFI_OFF="${ICON_WIFI_OFF:-󰖪}"
 ICON_LOCK="${ICON_LOCK:-󱚿}"
 ICON_OPEN="${ICON_OPEN:-󱛀}"
-ICON_REFRESH="${ICON_REFRESH:-}"
-ICON_GEAR="${ICON_GEAR:-⚙}"
-ICON_INFO="${ICON_INFO:-ℹ}"
-ICON_TRASH="${ICON_TRASH:-}"
-ICON_POWER="${ICON_POWER:-⏻}"
+ICON_REFRESH="${ICON_REFRESH:-}"
+ICON_GEAR="${ICON_GEAR:-}"
+ICON_INFO="${ICON_INFO:-}"
+ICON_TRASH="${ICON_TRASH:-}"
+ICON_POWER="${ICON_POWER:-}"
 ICON_HOTSPOT="${ICON_HOTSPOT:-󰜕}"
-ICON_HIDDEN="${ICON_HIDDEN:-}"
-ICON_LOGS="${ICON_LOGS:-}"
-ICON_BACK="${ICON_BACK:-↩}"
-ICON_QUIT="${ICON_QUIT:-✕}"
-ICON_STAR="${ICON_STAR:-★}"
-ICON_CHECK="${ICON_CHECK:-✓}"
-ICON_DISCONNECT="${ICON_DISCONNECT:-}"
+ICON_HIDDEN="${ICON_HIDDEN:-}"
+ICON_LOGS="${ICON_LOGS:-}"
+ICON_BACK="${ICON_BACK:-}"
+ICON_QUIT="${ICON_QUIT:-}"
+ICON_STAR="${ICON_STAR:-}"
+ICON_CHECK="${ICON_CHECK:-}"
+ICON_DISCONNECT="${ICON_DISCONNECT:-}"
+ICON_DEVICE="${ICON_DEVICE:-}"
+ICON_SCAN="${ICON_SCAN:-}"
+ICON_STATUS="${ICON_STATUS:-}"
+ICON_ADVANCED="${ICON_ADVANCED:-}"
+ICON_TOGGLE="${ICON_TOGGLE:-}"
 
 # Workspace + log file
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/${SCRIPT_NAME}.XXXXXX")"
@@ -92,6 +102,56 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 LOGFILE="${LOGFILE:-${XDG_STATE_HOME:-$HOME/.local/state}/${SCRIPT_NAME}/${SCRIPT_NAME}.log}"
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# String formatting helpers
+# -----------------------------------------------------------------------------
+# All helpers operate on character count (not visual width). With Nerd Font
+# 1-cell icons and a monospace fuzzel font, this gives perfect alignment.
+
+pad_right() {
+    # pad_right STRING WIDTH → STRING padded with spaces to at least WIDTH chars
+    local str="$1" width="$2"
+    local len=${#str}
+    if (( len >= width )); then
+        printf '%s' "$str"
+    else
+        printf '%s%*s' "$str" $((width - len)) ''
+    fi
+}
+
+truncate_str() {
+    # truncate_str STRING MAX → STRING truncated to MAX chars with '…' suffix
+    local str="$1" max="$2"
+    if (( ${#str} > max )); then
+        printf '%s…' "${str:0:$((max - 1))}"
+    else
+        printf '%s' "$str"
+    fi
+}
+
+fmt_item() {
+    # fmt_item ICON LABEL → "ICON  LABEL" (icon + 2 spaces + label)
+    # All icons are 1-cell, so labels align at column 4.
+    printf '%s  %s' "$1" "$2"
+}
+
+fmt_kv() {
+    # fmt_kv LABEL VALUE → "  LABEL<padded> :  VALUE"
+    # Used in status block for aligned key-value display.
+    printf '  %s :  %s' "$(pad_right "$1" "$COL_LABEL")" "$2"
+}
+
+separator() {
+    # separator TITLE → "─── TITLE ────────────────────────────"
+    local title="$1"
+    local line="──────────────────────────────────────────────────────────────────────"
+    if [[ -z "$title" ]]; then
+        printf '%s' "$line"
+    else
+        printf '─── %s %s' "$title" "${line:0:40}"
+    fi
+}
 
 # -----------------------------------------------------------------------------
 # Logging & notifications
@@ -116,7 +176,6 @@ notify() {
             notify-send -a "$SCRIPT_NAME" -u normal "$summary" >/dev/null 2>&1 &
         fi
     fi
-    # Always also echo to stderr so waybar / terminal users see something
     if [[ -n "$body" ]]; then
         printf '%s: %s\n' "$summary" "$body" >&2
     else
@@ -151,8 +210,6 @@ EOF
 }
 
 ensure_nm_running() {
-    # `nmcli general status` is the cheapest round-trip that proves the
-    # daemon is reachable on the system D-Bus.
     if ! nmcli general status >/dev/null 2>&1; then
         notify "NetworkManager not running" \
             "Start it with: sudo systemctl start NetworkManager"
@@ -164,9 +221,6 @@ ensure_nm_running() {
 # WiFi device detection
 # -----------------------------------------------------------------------------
 get_wifi_device() {
-    # Echoes the chosen WiFi device name (e.g. wlan0).
-    # Preference order: wlan0 (if UP/connected) → any connected wifi device →
-    # any wifi device. Returns 4 if none exist.
     local devs dev name state
     mapfile -t devs < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null \
                         | awk -F: '$2=="wifi" {print $1":"$3}')
@@ -175,13 +229,11 @@ get_wifi_device() {
         return 4
     fi
 
-    # Prefer wlan0
     for dev in "${devs[@]}"; do
         name="${dev%%:*}"
         [[ "$name" == "wlan0" ]] && { echo "$name"; return 0; }
     done
 
-    # Then prefer one that is connected
     for dev in "${devs[@]}"; do
         name="${dev%%:*}"
         state="${dev##*:}"
@@ -190,7 +242,6 @@ get_wifi_device() {
         fi
     done
 
-    # Fall back to the first one (even if disconnected/unavailable)
     echo "${devs[0]%%:*}"
 }
 
@@ -205,7 +256,6 @@ require_wifi_device() {
 }
 
 check_rfkill() {
-    # Returns 1 (and notifies) if WiFi is soft- or hard-blocked.
     if command -v rfkill >/dev/null 2>&1; then
         if rfkill list wifi 2>/dev/null | grep -q "Soft blocked: yes"; then
             notify "WiFi soft-blocked" "Run: sudo rfkill unblock wifi"
@@ -224,7 +274,6 @@ wifi_is_enabled() {
 }
 
 get_current_ssid() {
-    # get_current_ssid DEV → echoes current SSID or empty string.
     local dev="$1"
     nmcli -t --escape yes -f ACTIVE,SSID device wifi list ifname "$dev" --rescan no 2>/dev/null \
         | awk -F: '$1=="*" {print $2; exit}' \
@@ -236,10 +285,7 @@ get_current_ssid() {
 # -----------------------------------------------------------------------------
 menu_pick() {
     # menu_pick PROMPT LINE1 LINE2 ...
-    # Echoes the chosen line (verbatim) to stdout.
-    # Returns 5 if user cancelled (Esc).
     local prompt="$1"; shift
-
     if [[ $# -eq 0 ]]; then
         return 5
     fi
@@ -256,7 +302,6 @@ menu_pick() {
             return 5
         fi
     else
-        # Last-resort terminal prompt
         printf '%s\n' "$@" | cat -n >&2
         printf '%s' "$prompt (number, 0 to cancel): " >&2
         local n
@@ -273,8 +318,6 @@ menu_pick() {
 }
 
 prompt_password() {
-    # prompt_password PROMPT → echoes password (no trailing newline).
-    # Returns 5 if user cancelled.
     local prompt="$1"
     local pw
     if command -v fuzzel >/dev/null 2>&1; then
@@ -294,10 +337,6 @@ prompt_password() {
 }
 
 prompt_text() {
-    # prompt_text PROMPT [SUGGESTION...] → echoes free-text entry.
-    # Used for hidden SSID / hotspot SSID. Modern fuzzel returns the typed
-    # query when no entry matches; we feed one blank line so the user can
-    # type freely.
     local prompt="$1"; shift
     local text
     if command -v fuzzel >/dev/null 2>&1; then
@@ -325,11 +364,10 @@ prompt_text() {
 
 show_text() {
     # show_text TITLE BODY — display a read-only blob of text via fuzzel.
-    # User dismisses with Esc; we ignore the "selection".
     local title="$1"; local body="$2"
     if command -v fuzzel >/dev/null 2>&1; then
         printf '%s\n' "$body" | fuzzel --dmenu \
-            --prompt "${title} (Esc to close): " \
+            --prompt "${title}  (Esc to close): " \
             --lines "$FUZZEL_LINES" --width "$FUZZEL_WIDTH" 2>/dev/null || true
     else
         printf '=== %s ===\n%s\n' "$title" "$body"
@@ -340,9 +378,9 @@ show_text() {
 # Signal-strength rendering
 # -----------------------------------------------------------------------------
 signal_bars() {
-    # signal_bars PERCENT → echoes a 5-char bracketed bar like [███░░]
+    # signal_bars PERCENT → "[████░]" (5-cell bar with brackets)
     local pct="$1"
-    local fill=$(( (pct * 5 + 50) / 100 ))   # round to nearest of 5
+    local fill=$(( (pct * 5 + 50) / 100 ))
     (( fill > 5 )) && fill=5
     (( fill < 0 )) && fill=0
     local out="[" i
@@ -356,7 +394,6 @@ signal_bars() {
 # WiFi actions
 # -----------------------------------------------------------------------------
 do_rescan() {
-    # nmcli refuses to rescan more than once every ~30 s; ignore that error.
     local dev="$1"
     if ! nmcli device wifi rescan ifname "$dev" 2>>"$LOGFILE"; then
         log_warn "rescan on $dev failed (likely cooldown) - using cached results"
@@ -375,8 +412,6 @@ do_scan_and_connect() {
 
     do_rescan "$dev"
 
-    # `--escape yes` escapes ':' and '\' in values so that ':' is a safe
-    # field separator even for SSIDs that contain colons.
     local raw
     if ! raw="$(nmcli -t --escape yes -f IN-USE,SSID,SIGNAL,SECURITY \
                   device wifi list ifname "$dev" --rescan no 2>>"$LOGFILE")"; then
@@ -385,22 +420,21 @@ do_scan_and_connect() {
     fi
 
     local displays=() ssids=() securities=() in_uses=()
-    local in_use ssid signal security sec_icon marker bars display
+    local in_use ssid signal security sec_icon marker bars display ssid_col
 
     while IFS=: read -r in_use ssid signal security; do
-        # Unescape nmcli's \3a (':') and \\ ('\')
         ssid="${ssid//\\3a/:}"
         ssid="${ssid//\\\\/\\}"
         security="${security//\\3a/:}"
         security="${security//\\\\/\\}"
 
-        # Skip empty / hidden SSIDs (they show as "--" or blank)
         [[ -z "$ssid" || "$ssid" == "--" ]] && continue
 
         if [[ -n "$security" && "$security" != "--" ]]; then
             sec_icon="$ICON_LOCK"
         else
             sec_icon="$ICON_OPEN"
+            security="open"
         fi
 
         if [[ "$in_use" == "*" ]]; then
@@ -410,10 +444,12 @@ do_scan_and_connect() {
         fi
 
         bars="$(signal_bars "${signal:-0}")"
+        ssid_col="$(pad_right "$(truncate_str "$ssid" "$COL_SSID")" "$COL_SSID")"
 
-        # Format: marker icon pct% bars  SSID  (security)
-        printf -v display '%s %s %3s%% %s  %-26s  %s' \
-            "$marker" "$sec_icon" "${signal:-0}" "$bars" "$ssid" "$security"
+        # Column layout (all 1-cell chars):
+        #   marker  icon  signal(3r)%  bars  ssid(24)  security
+        printf -v display '%s %s  %3s%% %s  %s  %s' \
+            "$marker" "$sec_icon" "${signal:-0}" "$bars" "$ssid_col" "$security"
 
         displays+=("$display")
         ssids+=("$ssid")
@@ -427,11 +463,10 @@ do_scan_and_connect() {
     fi
 
     local choice
-    if ! choice="$(menu_pick "Connect to: " "${displays[@]}")"; then
+    if ! choice="$(menu_pick "$(fmt_item "$ICON_SCAN" 'Select network:') " "${displays[@]}")"; then
         return 5
     fi
 
-    # Match the chosen display line back to its SSID
     local idx=-1 i
     for i in "${!displays[@]}"; do
         if [[ "${displays[$i]}" == "$choice" ]]; then
@@ -448,18 +483,17 @@ do_scan_and_connect() {
     local already_connected=0
     [[ "${in_uses[$idx]}" == "*" ]] && already_connected=1
 
-    # If already connected, ask whether to reconnect
     if [[ "$already_connected" -eq 1 ]]; then
         local ans
-        if ! ans="$(menu_pick "Already connected to '$chosen_ssid'. Reconnect?" \
-                       "Yes, reconnect" "No, go back")"; then
+        if ! ans="$(menu_pick "Already on '${chosen_ssid}'. Reconnect? " \
+                       "$(fmt_item "$ICON_CHECK" 'Yes, reconnect')" \
+                       "$(fmt_item "$ICON_BACK" 'No, go back')")"; then
             return 0
         fi
-        [[ "$ans" == "No"* ]] && return 0
+        [[ "$ans" == *"No"* ]] && return 0
     fi
 
-    # Open vs secured
-    if [[ -z "$chosen_sec" || "$chosen_sec" == "--" ]]; then
+    if [[ -z "$chosen_sec" || "$chosen_sec" == "open" ]]; then
         if nmcli device wifi connect "$chosen_ssid" ifname "$dev" 2>>"$LOGFILE"; then
             notify "Connected" "$chosen_ssid"
             log_info "connected to open network: $chosen_ssid"
@@ -469,7 +503,7 @@ do_scan_and_connect() {
         fi
     else
         local password
-        if ! password="$(prompt_password "Password for '$chosen_ssid': ")"; then
+        if ! password="$(prompt_password "Password for '${chosen_ssid}': ")"; then
             return 5
         fi
         if [[ -z "$password" ]]; then
@@ -488,15 +522,15 @@ do_scan_and_connect() {
 }
 
 do_status() {
-    # Echoes a formatted status block to stdout.
+    # Echoes a formatted, aligned status block to stdout.
     local dev="$1"
 
     if ! wifi_is_enabled; then
         cat <<EOF
-$ICON_WIFI_OFF  WiFi radio is OFF
-
-Device: $dev
-Run '$SCRIPT_NAME --toggle' to enable.
+$(separator "")
+  $(fmt_kv "Status"   "${ICON_WIFI_OFF}  WiFi radio is OFF")
+  $(fmt_kv "Device"   "$dev")
+  $(fmt_kv "Hint"     "Run '$SCRIPT_NAME --toggle' to enable")
 EOF
         return 0
     fi
@@ -508,10 +542,10 @@ EOF
 
     if [[ -z "$raw" ]]; then
         cat <<EOF
-$ICON_WIFI_OFF  Not connected
-
-Device: $dev
-State:  disconnected
+$(separator "")
+  $(fmt_kv "Status"   "${ICON_WIFI_OFF}  Not connected")
+  $(fmt_kv "Device"   "$dev")
+  $(fmt_kv "State"    "disconnected")
 EOF
         return 0
     fi
@@ -520,25 +554,30 @@ EOF
     IFS=: read -r _ a_ssid a_signal a_sec a_freq a_chan a_rate a_bssid <<< "$raw"
     a_ssid="${a_ssid//\\3a/:}"; a_ssid="${a_ssid//\\\\/\\}"
     a_sec="${a_sec//\\3a/:}";   a_sec="${a_sec//\\\\/\\}"
+    [[ -z "$a_sec" || "$a_sec" == "--" ]] && a_sec="open"
 
     local ip4 gw dns
     ip4="$(nmcli -t -f IP4.ADDRESS device show "$dev" 2>/dev/null | head -1 | cut -d: -f2-)"
     gw="$(nmcli -t -f IP4.GATEWAY  device show "$dev" 2>/dev/null | head -1 | cut -d: -f2-)"
     dns="$(nmcli -t -f IP4.DNS     device show "$dev" 2>/dev/null | cut -d: -f2- | paste -sd ' ' -)"
 
+    local signal_str="${a_signal:-0}%  $(signal_bars "${a_signal:-0}")"
+
     cat <<EOF
-$ICON_WIFI  Connected to: $a_ssid
+$(separator "Connection")
+  $(fmt_kv "SSID"      "$a_ssid")
+  $(fmt_kv "Signal"    "$signal_str")
+  $(fmt_kv "Security"  "${a_sec:-none}")
+  $(fmt_kv "Channel"   "${a_chan:-?}")
+  $(fmt_kv "Frequency" "${a_freq:-?}")
+  $(fmt_kv "Bitrate"   "${a_rate:-?}")
+  $(fmt_kv "BSSID"     "${a_bssid:-?}")
 
-Signal:     ${a_signal}%  $(signal_bars "${a_signal:-0}")
-Security:   ${a_sec:-none}
-Channel:    ${a_chan:-?}    Frequency: ${a_freq:-?}
-Bitrate:    ${a_rate:-?}
-BSSID:      ${a_bssid:-?}
-
-IPv4:       ${ip4:-none}
-Gateway:    ${gw:-none}
-DNS:        ${dns:-none}
-Device:     $dev
+$(separator "IPv4")
+  $(fmt_kv "Address"   "${ip4:-none}")
+  $(fmt_kv "Gateway"   "${gw:-none}")
+  $(fmt_kv "DNS"       "${dns:-none}")
+  $(fmt_kv "Device"    "$dev")
 EOF
 }
 
@@ -575,16 +614,17 @@ do_forget() {
     fi
 
     local choice
-    if ! choice="$(menu_pick "Forget network: " "${saved[@]}")"; then
+    if ! choice="$(menu_pick "$(fmt_item "$ICON_TRASH" 'Forget network:') " "${saved[@]}")"; then
         return 5
     fi
 
-    # Confirm
     local ans
-    if ! ans="$(menu_pick "Forget '$choice'?" "Yes, forget it" "No, cancel")"; then
+    if ! ans="$(menu_pick "Forget '${choice}'? " \
+                   "$(fmt_item "$ICON_CHECK" 'Yes, forget it')" \
+                   "$(fmt_item "$ICON_BACK" 'No, cancel')")"; then
         return 0
     fi
-    [[ "$ans" == "No"* ]] && return 0
+    [[ "$ans" == *"No"* ]] && return 0
 
     if nmcli connection delete "$choice" 2>>"$LOGFILE"; then
         notify "Forgotten" "$choice"
@@ -603,7 +643,6 @@ do_toggle_wifi() {
         log_info "wifi radio disabled"
     else
         nmcli radio wifi on 2>>"$LOGFILE"
-        # Give the radio a moment to come up
         sleep 1
         notify "WiFi on" "Rescanning…"
         do_rescan "$dev"
@@ -660,7 +699,6 @@ do_hotspot() {
         return 1
     fi
 
-    # Will fail gracefully if the adapter does not support AP mode.
     if nmcli device wifi hotspot ifname "$dev" \
             con-name "hotspot-$ssid" ssid "$ssid" password "$pass" 2>>"$LOGFILE"; then
         notify "Hotspot started" "SSID: $ssid"
@@ -674,21 +712,38 @@ do_hotspot() {
 do_show_saved() {
     local dev="$1"
     local out
-    out="$(nmcli -t --escape yes -f NAME,TYPE,AUTOCONNECT,TIMESTAMP-REAL \
+    # Header + rows, all aligned by character count
+    out="$(printf '  %s  %s  %s\n' \
+            "$(pad_right "NAME" "$COL_NAME")" \
+            "$(pad_right "AUTO" 5)" \
+            "LAST USED")"
+    out+="$(printf '  %s\n' "$(separator "")")"
+    out+="$(nmcli -t --escape yes -f NAME,TYPE,AUTOCONNECT,TIMESTAMP-REAL \
             connection show 2>/dev/null \
-            | awk -F: '$2=="wifi" {
+            | awk -F: -v col="$COL_NAME" '$2=="wifi" {
                 name=$1; ac=$3; ts=$4;
                 gsub(/\\3a/, ":", name); gsub(/\\\\/, "\\", name);
-                printf "  %-28s  auto=%-3s  last=%s\n", name, ac, ts
+                ac = (ac=="yes") ? "yes" : "no";
+                if (ts=="--" || ts=="") ts="(never)";
+                printf "  %-*s  %-5s  %s\n", col, name, ac, ts;
               }')"
-    [[ -z "$out" ]] && out="(no saved WiFi connections)"
+    if [[ -z "${out#*$'\n'}" ]]; then
+        out="  (no saved WiFi connections)"
+    fi
     show_text "Saved WiFi connections" "$out"
 }
 
 do_show_device_details() {
     local dev="$1"
     local out
-    out="$(nmcli device show "$dev" 2>/dev/null | sed 's/^/  /')"
+    # Reformat nmcli output into aligned key-value pairs
+    out="$(nmcli -t device show "$dev" 2>/dev/null | awk -F: '{
+        key=$1; val=$2;
+        gsub(/^ +/, "", val); gsub(/ +$/, "", val);
+        if (key=="" || val=="") next;
+        printf "  %-22s :  %s\n", key, val;
+    }')"
+    [[ -z "$out" ]] && out="  (no details available for $dev)"
     show_text "Device details: $dev" "$out"
 }
 
@@ -700,7 +755,6 @@ do_show_logs() {
 }
 
 do_restart_nm() {
-    # Needs root. Prefer pkexec; fall back to giving the user the command.
     if command -v pkexec >/dev/null 2>&1; then
         if pkexec systemctl restart NetworkManager 2>>"$LOGFILE"; then
             notify "NetworkManager restarted" ""
@@ -723,30 +777,30 @@ do_advanced() {
     local dev="$1"
     while true; do
         local choice
-        if ! choice="$(menu_pick "$ICON_GEAR  Advanced: " \
-            "$ICON_HIDDEN   Connect to hidden network…" \
-            "$ICON_HOTSPOT  Create hotspot…" \
-            "$ICON_REFRESH  Force rescan" \
-            "$ICON_INFO     Show saved connections" \
-            "$ICON_INFO     Show device details" \
-            "$ICON_POWER    Restart NetworkManager" \
-            "$ICON_LOGS     View recent NetworkManager logs" \
-            "$ICON_WIFI     Toggle WiFi radio" \
-            "$ICON_BACK     Back to main menu" \
+        if ! choice="$(menu_pick "$(fmt_item "$ICON_ADVANCED" 'Advanced menu:') " \
+            "$(fmt_item "$ICON_HIDDEN"   'Connect to hidden network…')" \
+            "$(fmt_item "$ICON_HOTSPOT"  'Create hotspot…')" \
+            "$(fmt_item "$ICON_REFRESH"  'Force rescan')" \
+            "$(fmt_item "$ICON_INFO"     'Show saved connections')" \
+            "$(fmt_item "$ICON_DEVICE"   'Show device details')" \
+            "$(fmt_item "$ICON_POWER"    'Restart NetworkManager')" \
+            "$(fmt_item "$ICON_LOGS"     'View NetworkManager logs')" \
+            "$(fmt_item "$ICON_TOGGLE"   'Toggle WiFi radio')" \
+            "$(fmt_item "$ICON_BACK"     'Back to main menu')" \
         )"; then
             return 0
         fi
 
         case "$choice" in
-            *hidden*)            do_hidden_connect "$dev" ;;
-            *hotspot*)           do_hotspot "$dev" ;;
-            *Force\ rescan*)     do_rescan "$dev"; notify "Rescan triggered" "" ;;
+            *hidden*)             do_hidden_connect "$dev" ;;
+            *hotspot*)            do_hotspot "$dev" ;;
+            *Force\ rescan*)      do_rescan "$dev"; notify "Rescan triggered" "" ;;
             *saved\ connections*) do_show_saved "$dev" ;;
-            *device\ details*)   do_show_device_details "$dev" ;;
+            *device\ details*)    do_show_device_details "$dev" ;;
             *Restart\ NetworkManager*) do_restart_nm ;;
             *NetworkManager\ logs*) do_show_logs ;;
-            *Toggle\ WiFi*)      do_toggle_wifi "$dev" ;;
-            *Back*)              return 0 ;;
+            *Toggle\ WiFi*)       do_toggle_wifi "$dev" ;;
+            *Back*)               return 0 ;;
         esac
     done
 }
@@ -759,14 +813,13 @@ main_menu() {
     dev="$(require_wifi_device)" || exit $?
 
     while true; do
-        # Build dynamic header line
-        local wifi_state wifi_icon status_line current
+        local wifi_state wifi_icon status_line current prompt
         if wifi_is_enabled; then
             wifi_state="on"
             wifi_icon="$ICON_WIFI"
             current="$(get_current_ssid "$dev")"
             if [[ -n "$current" ]]; then
-                status_line="Connected: $current"
+                status_line="Connected: $(truncate_str "$current" 22)"
             else
                 status_line="Not connected"
             fi
@@ -775,17 +828,18 @@ main_menu() {
             wifi_icon="$ICON_WIFI_OFF"
             status_line="WiFi off"
         fi
+        prompt="$(printf '%s  WiFi Manager  [%s]: ' "$wifi_icon" "$status_line")"
 
         local choice
-        if ! choice="$(menu_pick "$wifi_icon  WiFi Manager  [$status_line]: " \
-            "$ICON_REFRESH   Scan & Connect…" \
-            "$ICON_INFO      Current Connection Status" \
-            "$ICON_DISCONNECT  Disconnect" \
-            "$ICON_TRASH     Forget Network…" \
-            "$ICON_GEAR      Advanced…" \
-            "$wifi_icon      Toggle WiFi (currently: $wifi_state)" \
-            "$ICON_REFRESH   Refresh" \
-            "$ICON_QUIT      Quit" \
+        if ! choice="$(menu_pick "$prompt" \
+            "$(fmt_item "$ICON_SCAN"        'Scan & Connect…')" \
+            "$(fmt_item "$ICON_STATUS"      'Current Connection Status')" \
+            "$(fmt_item "$ICON_DISCONNECT"  'Disconnect')" \
+            "$(fmt_item "$ICON_TRASH"       'Forget Network…')" \
+            "$(fmt_item "$ICON_ADVANCED"    'Advanced…')" \
+            "$(fmt_item "$ICON_TOGGLE"      "Toggle WiFi (currently: $wifi_state)")" \
+            "$(fmt_item "$ICON_REFRESH"     'Refresh')" \
+            "$(fmt_item "$ICON_QUIT"        'Quit')" \
         )"; then
             return 0
         fi
@@ -794,7 +848,7 @@ main_menu() {
             *Scan*)
                 do_scan_and_connect "$dev" ;;
             *Current\ Connection\ Status*)
-                show_text "Status" "$(do_status "$dev")" ;;
+                show_text "Connection Status" "$(do_status "$dev")" ;;
             *Disconnect*)
                 do_disconnect "$dev" ;;
             *Forget\ Network*)
@@ -804,7 +858,7 @@ main_menu() {
             *Toggle\ WiFi*)
                 do_toggle_wifi "$dev" ;;
             *Refresh*)
-                : ;;   # just re-render the header
+                : ;;
             *Quit*)
                 return 0 ;;
         esac
@@ -815,7 +869,6 @@ main_menu() {
 # CLI dispatch
 # -----------------------------------------------------------------------------
 usage() {
-    # Print the header comment block (lines 3-53)
     sed -n '3,53p' "$0" | sed 's/^# \{0,1\}//'
 }
 
@@ -855,7 +908,7 @@ main() {
             exit 0
             ;;
         "")
-            : ;;  # interactive mode
+            : ;;
         *)
             echo "Unknown option: $1" >&2
             echo "Try --help" >&2

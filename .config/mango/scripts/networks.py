@@ -205,8 +205,10 @@ label {
   background-color: rgba(38, 35, 58, 0.55);
   border: 1px solid rgba(110, 106, 134, 0.35);
   border-radius: 16px;
-  padding: 12px 16px;
   margin-bottom: 14px;
+  /* NOTE: no CSS padding here. The header is a Gtk.EventBox, which does
+     not apply CSS padding to its child layout. The inner box carries
+     real margins so text and buttons never touch the border. */
 }
 .title-label {
   color: #e0def4;
@@ -2123,7 +2125,13 @@ class ConnectionRow(Gtk.EventBox):
         self.main_window = main_window
         self.set_visible_window(True)
         self.set_can_focus(False)
+        # Context menu lifetime is owned by this row. A popup Gtk.Menu with
+        # no surviving reference is garbage-collected by PyGObject before it
+        # becomes visible, which is why the menu must be stored on the row.
+        self._menu: Optional[Gtk.Menu] = None
+        self.connect("button-press-event", self.on_button_press)
         self.connect("button-release-event", self.on_button_release)
+        self.connect("destroy", self._on_row_destroy)
 
         self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.box.get_style_context().add_class("row-card")
@@ -2222,6 +2230,61 @@ class ConnectionRow(Gtk.EventBox):
             self._render()
 
     # -------------------------------------------------------------------------
+    # Context menu
+    # -------------------------------------------------------------------------
+    def _on_row_destroy(self, _widget: Gtk.Widget) -> None:
+        if self._menu is not None:
+            try:
+                self._menu.destroy()
+            except Exception:
+                pass
+            self._menu = None
+
+    def popup_menu(self, event: Optional[Gdk.EventButton] = None) -> None:
+        """
+        Build and show the context menu.
+
+        The menu is kept alive on self._menu: a Gtk.Menu created inside a
+        callback with no surviving reference is garbage-collected by
+        PyGObject before GTK can display it (this is exactly why
+        right-click appeared to do nothing before).
+        """
+        if self._menu is not None:
+            try:
+                self._menu.destroy()
+            except Exception:
+                pass
+        menu = self.build_menu()
+        self._menu = menu
+        try:
+            if event is not None:
+                menu.popup_at_pointer(event)
+            else:
+                # Opened via the "more actions" button: anchor to it.
+                menu.popup_at_widget(
+                    self.menu_btn,
+                    Gdk.Gravity.SOUTH_EAST,
+                    Gdk.Gravity.NORTH_EAST,
+                    None,
+                )
+        except Exception:
+            # Very old GTK without popup_at_pointer/popup_at_widget.
+            button = event.button if event is not None else 0
+            etime = event.time if event is not None else Gtk.get_current_event_time()
+            menu.popup(None, None, None, None, button, etime)
+
+    def on_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
+        # Show the context menu on button press: this is the standard GTK
+        # behavior and feels immediate (no waiting for the release).
+        if event.button == 3:
+            self.popup_menu(event)
+            return True
+        return False
+
+    def _on_menu_clicked(self, _btn: Gtk.Button) -> None:
+        self.popup_menu(None)
+
+    # -------------------------------------------------------------------------
     # Events
     # -------------------------------------------------------------------------
     def _on_auto_set(self, _switch: Gtk.Switch, active: bool) -> bool:
@@ -2231,20 +2294,9 @@ class ConnectionRow(Gtk.EventBox):
     def _on_action_clicked(self, _btn: Gtk.Button) -> None:
         self.main_window.activate_profile(self.profile)
 
-    def _on_menu_clicked(self, btn: Gtk.Button) -> None:
-        menu = self.build_menu()
-        try:
-            menu.popup_at_widget(btn, Gdk.Gravity.SOUTH_EAST, Gdk.Gravity.NORTH_EAST, None)
-        except Exception:
-            menu.popup(None, None, None, None, 0, Gtk.get_current_event_time())
-
     def on_button_release(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if event.button == 3:
-            menu = self.build_menu()
-            try:
-                menu.popup_at_pointer(event)
-            except Exception:
-                menu.popup(None, None, None, None, event.button, event.time)
+            # Already handled on press; consume the release as well.
             return True
         if event.button == 1:
             if is_instance_or_ancestor(
@@ -2515,7 +2567,15 @@ class NetworkOverview(Gtk.Window):
         header.get_style_context().add_class("header")
         header.connect("button-press-event", self._on_header_press)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        # Gtk.EventBox does not apply CSS padding to its child layout, so
+        # the breathing room between the header content and the border is
+        # provided by real margins on this inner box. This keeps the title
+        # text and the buttons comfortably off the header border.
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
         header.add(box)
 
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)

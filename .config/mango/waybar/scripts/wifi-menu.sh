@@ -68,23 +68,23 @@ FUZZEL_FONT="${FUZZEL_FONT:-}"               # e.g. "JetBrainsMono Nerd Font:siz
 
 # Icons — simple Unicode glyphs that render in any font (incl. Nerd Fonts).
 # Override via env to customise (e.g. plain text for minimal setups).
-ICON_WIFI="${ICON_WIFI:-📶}"
-ICON_WIFI_OFF="${ICON_WIFI_OFF:-📵}"
-ICON_LOCK="${ICON_LOCK:-🔒}"
-ICON_OPEN="${ICON_OPEN:-🔓}"
-ICON_REFRESH="${ICON_REFRESH:-🔄}"
+ICON_WIFI="${ICON_WIFI:-}"
+ICON_WIFI_OFF="${ICON_WIFI_OFF:-󰖪}"
+ICON_LOCK="${ICON_LOCK:-󱚿}"
+ICON_OPEN="${ICON_OPEN:-󱛀}"
+ICON_REFRESH="${ICON_REFRESH:-}"
 ICON_GEAR="${ICON_GEAR:-⚙}"
 ICON_INFO="${ICON_INFO:-ℹ}"
-ICON_TRASH="${ICON_TRASH:-🗑}"
+ICON_TRASH="${ICON_TRASH:-}"
 ICON_POWER="${ICON_POWER:-⏻}"
-ICON_HOTSPOT="${ICON_HOTSPOT:-📡}"
-ICON_HIDDEN="${ICON_HIDDEN:-👁}"
-ICON_LOGS="${ICON_LOGS:-📜}"
+ICON_HOTSPOT="${ICON_HOTSPOT:-󰜕}"
+ICON_HIDDEN="${ICON_HIDDEN:-}"
+ICON_LOGS="${ICON_LOGS:-}"
 ICON_BACK="${ICON_BACK:-↩}"
 ICON_QUIT="${ICON_QUIT:-✕}"
 ICON_STAR="${ICON_STAR:-★}"
 ICON_CHECK="${ICON_CHECK:-✓}"
-ICON_DISCONNECT="${ICON_DISCONNECT:-🔌}"
+ICON_DISCONNECT="${ICON_DISCONNECT:-}"
 
 # Workspace + log file
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/${SCRIPT_NAME}.XXXXXX")"

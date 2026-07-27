@@ -101,7 +101,7 @@
         },
         "scroll-step": 3,
         "on-click": "pamixer -t",
-        "on-click-right": "~/.config/mango/waybar/scripts/audio-switch.sh output",
+        "on-click-right": "pavucontrol-qt",
         "on-scroll-up": "swayosd-client --output-volume raise",
         "on-scroll-down": "swayosd-client --output-volume lower",
         "tooltip-format": "{desc}\n{volume}%"
@@ -111,7 +111,7 @@
         "format-source": "󰍬 {volume}%",
         "format-source-muted": "󰍭 Muted",
         "on-click": "pamixer --default-source -t",
-        "on-click-right": "~/.config/mango/waybar/scripts/audio-switch.sh input",
+        "on-click-right": "pavucontrol-qt",
         "on-scroll-up": "swayosd-client --input-volume raise",
         "on-scroll-down": "swayosd-client --input-volume lower",
         "tooltip-format": "{desc}\n{volume}%"

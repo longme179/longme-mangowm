@@ -45,28 +45,6 @@ end
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ######################################################################################
 
 function ff
@@ -206,7 +184,6 @@ function fish_greeting
     end
 
     # ── Render song song ──
-    echo ""
     set -l max_lines (count $g)
     if test (count $a) -gt $max_lines
         set max_lines (count $a)

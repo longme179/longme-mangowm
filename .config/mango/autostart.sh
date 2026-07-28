@@ -35,7 +35,7 @@ wl-clip-persist --clipboard regular --reconnect-tries 0 >/dev/null 2>&1 &
 wl-paste --watch cliphist store &
 
 # bluetooth
-blueman-applet >/dev/null 2>&1 &
+# blueman-applet >/dev/null 2>&1 &
 
 # network
 nm-applet >/dev/null 2>&1 &

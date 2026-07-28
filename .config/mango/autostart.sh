@@ -48,3 +48,8 @@ sway-audio-idle-inhibit >/dev/null 2>&1 &
 
 # change light value and volume value by swayosd-client in keybind
 swayosd-server >/dev/null 2>&1 &
+
+
+# silly lavat
+kitty lavat -G -g -c ebbcba -k eb6f92 -s 4
+kitty ff

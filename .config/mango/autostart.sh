@@ -52,4 +52,4 @@ swayosd-server >/dev/null 2>&1 &
 
 # silly lavat
 kitty lavat -G -g -c ebbcba -k eb6f92 -s 4
-kitty ff
+kitty fish -c "fastfetch; exec fish"

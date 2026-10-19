@@ -2,14 +2,14 @@
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
   "logo": {
     /* Logo configuration */
-    "type": "auto", // Logo type: auto, builtin, small, file, etc.
-    "source": "/home/longme/.config/fastfetch/ascii/hhog.txt", // Built-in logo name or file path
-    "width": 40, // Width in characters
-    "height": 35, // Height in characters
+    "type": "file", // Logo type: auto, builtin, small, file, etc.
+    "source": "/home/kimhoanglong/.config/fastfetch/ascii/dove-44.ansi", // Built-in logo name or file path
+    "width": 32, // Width in characters
+    "height": 32, // Height in characters
     "padding": {
-      "top": 5, // Top padding
+      "top": 0, // Top padding
       "left": 0, // Left padding
-      "right": 2, // Right padding
+      "right": 0, // Right padding
     },
     "color": {
       // Override logo colors
